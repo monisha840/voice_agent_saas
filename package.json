@@ -1,0 +1,22 @@
+{
+  "name": "voice-agent-mvp",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Real Estate Voice AI MVP - pnpm workspace root",
+  "scripts": {
+    "dev:api": "pnpm --filter @voice-agent/api dev",
+    "dev:web": "pnpm --filter @voice-agent/web dev",
+    "build": "pnpm --filter @voice-agent/api build && pnpm --filter @voice-agent/web build",
+    "typecheck": "pnpm --filter @voice-agent/api typecheck && pnpm --filter @voice-agent/web typecheck",
+    "lint": "pnpm --filter @voice-agent/api lint && pnpm --filter @voice-agent/web lint",
+    "test": "pnpm --filter @voice-agent/api test",
+    "db:up": "docker compose -f infra/docker/docker-compose.yml up -d",
+    "db:down": "docker compose -f infra/docker/docker-compose.yml down",
+    "db:generate": "pnpm --filter @voice-agent/api db:generate",
+    "db:migrate": "pnpm --filter @voice-agent/api db:migrate",
+    "db:seed": "pnpm --filter @voice-agent/api db:seed"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

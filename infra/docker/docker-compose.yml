@@ -1,0 +1,24 @@
+name: voice-agent-mvp
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: voice-agent-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: voice_agent
+      POSTGRES_PASSWORD: voice_agent
+      POSTGRES_DB: voice_agent_mvp
+    ports:
+      - "5432:5432"
+    volumes:
+      - voice_agent_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U voice_agent -d voice_agent_mvp"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  voice_agent_pgdata:
+    name: voice_agent_pgdata
