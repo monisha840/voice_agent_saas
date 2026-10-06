@@ -1,151 +1,125 @@
 import Link from "next/link";
-import { ArrowRight, MapPin, PhoneCall, Sparkles, Target, Users } from "lucide-react";
-import { api } from "@/lib/api";
-import { Header } from "@/components/Header";
-import { StatusBadge } from "@/components/StatusBadge";
-import { ErrorState } from "@/components/StateViews";
-import { formatBudgetRange, formatRelativeActivity } from "@/lib/format";
+import { ArrowRight, Bot } from "lucide-react";
+import { api } from "@/lib/api.server";
+import { can } from "@/lib/permissions";
+import { hasModule } from "@/lib/modules";
+import { counterpartyLabel, formatDateTime } from "@/lib/format";
+import type { Agent, CallListItem, UsageSummary } from "@/lib/types";
+import { LoadFailure, PageShell } from "@/components/PageShell";
+import { CallStatusBadge } from "@/components/CallStatusBadge";
+import { UsageTiles } from "@/components/UsageTiles";
+import { EmptyState } from "@/components/StateViews";
+import { Card, Notice } from "@/components/ui";
 
-export default async function DashboardPage() {
-  let project;
-  let leads;
-  let loadError: string | null = null;
-
+/** Voice AI core overview: usage, the active agent and recent calls. Nothing here depends on an optional module. */
+export default async function OverviewPage() {
   try {
-    const projects = await api.listProjects();
-    project = projects[0];
-    leads = await api.listLeads();
-  } catch {
-    loadError =
-      "Could not reach the API. Make sure the backend is running (pnpm dev:api) and the database is seeded (pnpm db:seed).";
-  }
+    const me = await api.me();
+    const role = me.organization?.role ?? null;
+    const sales = hasModule(me.organization, "sales");
 
-  if (loadError || !project || !leads) {
+    const to = new Date();
+    const from = new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const [recent, usage, agents] = await Promise.all([
+      can(role, "calls:read")
+        ? api.listCalls({ limit: 5 }).then((r) => r.data).catch((): CallListItem[] | null => null)
+        : Promise.resolve(null),
+      can(role, "usage:read")
+        ? api.usageSummary(from.toISOString(), to.toISOString()).catch((): UsageSummary | null => null)
+        : Promise.resolve(null),
+      can(role, "agents:read")
+        ? api.listAgents(false).catch((): Agent[] | null => null)
+        : Promise.resolve(null),
+    ]);
+
+    const activeAgents = (agents ?? []).filter((a) => a.status === "active");
+    const defaultAgent = activeAgents.find((a) => a.isDefault) ?? null;
+
     return (
-      <main className="min-h-screen bg-stone-50">
-        <Header />
-        <div className="mx-auto max-w-6xl px-6 py-16">
-          <ErrorState title="Unable to load dashboard" message={loadError!} />
-        </div>
-      </main>
-    );
-  }
+      <PageShell title="Overview" subtitle="Your voice agents, calls and usage at a glance.">
+        <div className="space-y-6">
+          {usage && (
+            <section>
+              <h2 className="mb-3 text-sm font-semibold text-stone-900">Usage, last 30 days</h2>
+              <UsageTiles usage={usage} showSiteVisits={sales} />
+            </section>
+          )}
 
-  // Metrics are derived entirely from the leads already fetched above —
-  // nothing here is fabricated. "AI Calls" counts leads that have moved
-  // past NEW (i.e. a call was at least attempted), "Interested" counts
-  // the INTERESTED/VISIT_BOOKED/CONFIRMED/VISITED outcomes, and "Visits
-  // Booked" counts the actual site-visit-bearing statuses.
-  const callsAttempted = leads.filter((l) => l.status !== "NEW").length;
-  const interested = leads.filter((l) =>
-    ["INTERESTED", "VISIT_BOOKED", "CONFIRMED", "VISITED"].includes(l.status),
-  ).length;
-  const visitsBooked = leads.filter((l) =>
-    ["VISIT_BOOKED", "CONFIRMED", "VISITED"].includes(l.status),
-  ).length;
-
-  const metrics = [
-    { label: "Total Leads", value: leads.length, icon: Users },
-    { label: "AI Calls", value: callsAttempted, icon: PhoneCall },
-    { label: "Interested", value: interested, icon: Target },
-    { label: "Visits Booked", value: visitsBooked, icon: Sparkles },
-  ];
-
-  return (
-    <main className="min-h-screen bg-stone-50">
-      <Header />
-
-      <div className="mx-auto max-w-6xl px-6 py-10">
-        {/* Hero: product story in one glance */}
-        <section className="mb-8">
-          <div className="flex flex-wrap items-start justify-between gap-6 rounded-xl border border-stone-200 bg-white p-7">
-            <div>
-              <div className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-200">
-                <Sparkles size={12} />
-                AI Voice Sales Agent
-              </div>
-              <h1 className="mt-3 text-2xl font-semibold tracking-tight text-stone-900">
-                {project.name}
-              </h1>
-              <p className="mt-1 flex items-center gap-1.5 text-sm text-stone-500">
-                <MapPin size={14} />
-                {project.location}
-              </p>
+          <div className="grid gap-6 lg:grid-cols-3">
+            <div className="lg:col-span-2">
+              <Card
+                title="Recent calls"
+                action={
+                  <Link
+                    href="/calls"
+                    className="inline-flex items-center gap-1 text-sm font-medium text-emerald-700 hover:text-emerald-800"
+                  >
+                    All calls <ArrowRight size={14} />
+                  </Link>
+                }
+              >
+                {recent === null ? (
+                  <Notice tone="info">Calls are not available to your role or could not be loaded.</Notice>
+                ) : recent.length === 0 ? (
+                  <EmptyState title="No calls yet" description="Run a test call to see it here." />
+                ) : (
+                  <ul className="-my-2 divide-y divide-stone-100">
+                    {recent.map((c) => (
+                      <li key={c.id}>
+                        <Link
+                          href={`/calls/${c.id}`}
+                          className="flex flex-wrap items-center justify-between gap-2 py-2.5 text-sm hover:text-emerald-800"
+                        >
+                          <span className="font-medium text-stone-900">{counterpartyLabel(c)}</span>
+                          <span className="flex items-center gap-3 text-xs text-stone-500">
+                            <CallStatusBadge status={c.status} />
+                            {formatDateTime(c.createdAt)}
+                          </span>
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </Card>
             </div>
-
-            {/* The product story, compressed to a single scannable line */}
-            <div className="flex items-center gap-2 text-xs font-medium text-stone-400">
-              {["Lead", "AI Call", "Qualification", "Conversation", "Site Visit", "Follow-up"].map(
-                (step, i, arr) => (
-                  <span key={step} className="flex items-center gap-2">
-                    <span className="rounded-md bg-stone-100 px-2 py-1 text-stone-600">{step}</span>
-                    {i < arr.length - 1 && <ArrowRight size={12} className="text-stone-300" />}
-                  </span>
-                ),
+            <div className="space-y-6">
+              {agents && (
+                <Card title="Agents" action={<Bot size={14} className="text-stone-300" />}>
+                  <div className="text-sm font-medium text-stone-900">
+                    {activeAgents.length} active agent{activeAgents.length === 1 ? "" : "s"}
+                  </div>
+                  <p className="mt-1 text-xs text-stone-500">
+                    {defaultAgent ? `Default: ${defaultAgent.name}` : "No default agent set"}
+                  </p>
+                  <Link
+                    href="/agents"
+                    className="mt-3 inline-flex items-center gap-1 text-sm font-medium text-emerald-700 hover:text-emerald-800"
+                  >
+                    Manage agents <ArrowRight size={14} />
+                  </Link>
+                </Card>
+              )}
+              {sales && (
+                <Card title="Sales module">
+                  <p className="text-sm text-stone-500">Leads, projects and site visits for outbound sales calls.</p>
+                  <Link
+                    href="/leads"
+                    className="mt-3 inline-flex items-center gap-1 text-sm font-medium text-emerald-700 hover:text-emerald-800"
+                  >
+                    Open leads <ArrowRight size={14} />
+                  </Link>
+                </Card>
               )}
             </div>
           </div>
-        </section>
-
-        {/* Metrics */}
-        <section className="mb-8 grid grid-cols-2 gap-4 sm:grid-cols-4">
-          {metrics.map((m) => (
-            <div key={m.label} className="rounded-xl border border-stone-200 bg-white p-5">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-medium uppercase tracking-wide text-stone-400">
-                  {m.label}
-                </span>
-                <m.icon size={14} className="text-stone-300" />
-              </div>
-              <div className="mt-2 text-3xl font-semibold tabular-nums text-stone-900">{m.value}</div>
-            </div>
-          ))}
-        </section>
-
-        {/* Lead list */}
-        <section className="rounded-xl border border-stone-200 bg-white">
-          <div className="flex items-center justify-between border-b border-stone-200 px-6 py-4">
-            <h2 className="text-sm font-semibold text-stone-900">Leads</h2>
-            <span className="text-xs text-stone-400">{leads.length} total</span>
-          </div>
-
-          <div className="divide-y divide-stone-100">
-            {leads.map((lead) => (
-              <Link
-                key={lead.id}
-                href={`/leads/${lead.id}`}
-                className="group flex items-center justify-between gap-6 px-6 py-4 transition hover:bg-stone-50"
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="truncate font-medium text-stone-900">{lead.name}</span>
-                    {lead.name === "Rajesh Kumar" && (
-                      <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700 ring-1 ring-inset ring-emerald-200">
-                        Demo Lead
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-0.5 text-sm text-stone-500">
-                    {lead.requirementConfig ?? "Requirement not captured"} ·{" "}
-                    {formatBudgetRange(lead.budgetMin, lead.budgetMax)}
-                  </div>
-                </div>
-
-                <div className="hidden text-sm text-stone-400 sm:block">
-                  {formatRelativeActivity(lead.status, lead.updatedAt)}
-                </div>
-
-                <StatusBadge status={lead.status} />
-
-                <ArrowRight
-                  size={16}
-                  className="shrink-0 text-stone-300 transition group-hover:translate-x-0.5 group-hover:text-stone-500"
-                />
-              </Link>
-            ))}
-          </div>
-        </section>
-      </div>
-    </main>
-  );
+        </div>
+      </PageShell>
+    );
+  } catch (err) {
+    return (
+      <PageShell title="Overview">
+        <LoadFailure err={err} what="Overview" />
+      </PageShell>
+    );
+  }
 }

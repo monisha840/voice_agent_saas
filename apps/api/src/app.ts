@@ -1,31 +1,118 @@
 import Fastify from "fastify";
-import cors from "@fastify/cors";
 import formbody from "@fastify/formbody";
+import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
-import { projectsRoutes } from "./modules/projects/projects.routes.js";
-import { leadsRoutes } from "./modules/leads/leads.routes.js";
+import { authRoutes } from "./modules/auth/auth.routes.js";
 import { callsRoutes } from "./modules/calls/calls.routes.js";
+import { usersRoutes } from "./modules/users/users.routes.js";
+import { organizationsRoutes } from "./modules/organizations/organizations.routes.js";
+import { agentConfigRoutes } from "./modules/agent-config/agent-config.routes.js";
+import { agentsRoutes } from "./modules/agents/agents.routes.js";
+import { auditRoutes } from "./modules/audit/audit.routes.js";
+import { usageRoutes } from "./modules/usage/usage.routes.js";
+import { modulesRoutes } from "./modules/modules/modules.routes.js";
+import { toolsRoutes } from "./modules/tools/tools.routes.js";
+import { CONFIGURED_MODULES } from "./modules.config.js";
+import { syncModules } from "./modules/modules/module-runtime.js";
+import { registerModuleRoutes } from "./modules/modules/module-routes.js";
+import type { ModuleManifest } from "./modules/modules/module-contract.js";
+import { agentPhoneNumbersRoutes } from "./modules/agents/agent-phone-numbers.routes.js";
+import { registerAuth } from "./auth/auth.plugin.js";
 import { logger } from "./shared/logger.js";
+import { getConfig } from "./config/env.js";
+import { globalRateLimitHook, routeRateLimitPluginOptions } from "./security/rate-limits.js";
+import { registerSecurityHeaders, registerUniformNotFound } from "./security/http-hardening.js";
+import { redactUrl, registerPublicAccessGuard } from "./security/telephony-auth.js";
+import {
+  ConflictError,
+  ForbiddenError,
+  NotFoundError,
+  UnauthorizedError,
+  ValidationError,
+} from "./shared/errors.js";
 
-export async function buildApp() {
-  const app = Fastify({ logger: true });
+export async function buildApp(
+  opts: {
+    logStream?: NodeJS.WritableStream;
+    /** Which optional modules to plug in (default: the deployment's CONFIGURED_MODULES). `[]` runs the bare Voice AI core. */
+    modules?: readonly ModuleManifest[];
+  } = {},
+) {
+  const cfg = getConfig();
+  const app = Fastify({
+    // Only honor X-Forwarded-* when explicitly told we sit behind a proxy we control.
+    // (The public-access guard reads the raw headers itself and is unaffected.)
+    trustProxy: cfg.trustProxy,
+    // Exotel payloads and dashboard JSON are tiny; refuse anything larger with 413.
+    bodyLimit: cfg.bodyLimitBytes,
+    logger: {
+      stream: opts.logStream,
+      // Defense in depth: never serialize credentials even if a header object is logged.
+      redact: ["req.headers.authorization", "req.headers.cookie", "res.headers[\"set-cookie\"]"],
+      // Telephony URLs carry a shared secret in ?token=; never write it to logs.
+      serializers: {
+        req(req) {
+          return { method: req.method, url: redactUrl(req.url ?? ""), hostname: req.hostname };
+        },
+      },
+    },
+  });
 
-  await app.register(cors, { origin: true });
-  // Exotel's status-callback posts application/x-www-form-urlencoded.
+  // Exotel's status-callback can post application/x-www-form-urlencoded.
   await app.register(formbody);
   await app.register(websocket);
+  // Route-level limits (login) use the plugin; the generous per-IP default is our own hook, added
+  // BEFORE the login gate so it also counts unauthenticated floods. Exotel/health are exempt. In-memory only.
+  await app.register(rateLimit, routeRateLimitPluginOptions());
+  app.addHook("onRequest", globalRateLimitHook);
+  registerSecurityHeaders(app);
+  registerUniformNotFound(app);
 
-  app.get("/health", async () => ({ status: "ok" }));
+  // Public-internet exposure (ngrok etc.): only /health and the Exotel endpoints are served.
+  registerPublicAccessGuard(app);
+  // CORS (dashboard origin only), cookies, CSRF check, sessions, and the login gate.
+  await registerAuth(app);
 
-  await app.register(projectsRoutes);
-  await app.register(leadsRoutes);
-  await app.register(callsRoutes);
-
-  app.setErrorHandler((err, _req, reply) => {
-    logger.error("unhandled error", { error: err.message, stack: err.stack });
-    const status = (err as { statusCode?: number }).statusCode ?? 500;
+  // Registered BEFORE the route plugins so every encapsulated route inherits it.
+  app.setErrorHandler((err, req, reply) => {
+    const status = errorStatus(err);
+    if (status >= 500) {
+      // Full detail stays server-side; the client only ever sees a generic message.
+      logger.error("unhandled error", { error: err.message, stack: err.stack, method: req.method });
+    }
     reply.status(status).send({ error: status >= 500 ? "Internal server error" : err.message });
   });
 
+  // Optional modules (Sales, ...) plug in through their manifests: tools, call hooks, prompt templates, permissions,
+  // data scopes. Idempotent; this app then serves exactly the modules listed.
+  syncModules(opts.modules ?? CONFIGURED_MODULES);
+
+  app.get("/health", async () => ({ status: "ok" }));
+
+  await app.register(authRoutes);
+  await app.register(callsRoutes);
+  await app.register(usersRoutes);
+  await app.register(organizationsRoutes);
+  await app.register(modulesRoutes);
+  await app.register(agentConfigRoutes);
+  await app.register(agentsRoutes);
+  await app.register(agentPhoneNumbersRoutes);
+  await app.register(auditRoutes);
+  await app.register(usageRoutes);
+  await app.register(toolsRoutes);
+
+  // Each registered module's routes, behind a gate that refuses organizations that have not enabled the module.
+  await registerModuleRoutes(app);
+
   return app;
+}
+
+function errorStatus(err: Error): number {
+  if (err instanceof ValidationError) return 400;
+  if (err instanceof UnauthorizedError) return 401;
+  if (err instanceof ForbiddenError) return 403;
+  if (err instanceof NotFoundError) return 404;
+  if (err instanceof ConflictError) return 409;
+  const status = (err as { statusCode?: number }).statusCode;
+  return status && status >= 400 && status < 600 ? status : 500;
 }

@@ -55,19 +55,19 @@ Provider selection is explicit and fixed at process start — the app never sile
 
 ### Activating real Exotel
 
-1. Get an Exotel account with AgentStream (Voicebot Applet) enabled and an ExoPhone capable of outbound calling.
+1. Get an Exotel account with **Voice Streaming / AgentStream enabled by Exotel** (it is not part of the self-serve plans; email hello@exotel.com) and an ExoPhone capable of outbound calling.
 2. Set in `.env`:
    ```
    TELEPHONY_PROVIDER=exotel
    EXOTEL_API_KEY=...
    EXOTEL_API_TOKEN=...
    EXOTEL_ACCOUNT_SID=...
-   EXOTEL_SUBDOMAIN=api.in.exotel.com   # or api.exotel.com for Singapore region
+   EXOTEL_SUBDOMAIN=api.exotel.com      # use the host shown in Dashboard > API Settings (api.in.exotel.com for India)
    EXOTEL_FROM_NUMBER=...               # your ExoPhone
    EXOTEL_WEBHOOK_BASE_URL=https://<publicly-reachable-host>   # e.g. an ngrok tunnel in dev
    EXOTEL_AGENTSTREAM_WEBHOOK_SECRET=...
    ```
-3. The API must be reachable from the public internet at `EXOTEL_WEBHOOK_BASE_URL` (use a tunnel like ngrok for local dev) so Exotel can reach the status-callback and media-stream endpoints.
+3. The API must be reachable from the public internet at `EXOTEL_WEBHOOK_BASE_URL` (use a tunnel like ngrok for local dev) so Exotel can reach the status-callback and media-stream endpoints. Through a tunnel/proxy (or any non-local Host) the API serves **only** `/health` and `/api/telephony/exotel/*`; the dashboard/lead/call/project APIs return 404. Set `API_PRIVATE_HOSTS` if you reach the API by another hostname.
 4. Restart the API. Clicking "Call Lead" will now place a real outbound call.
 
 ### Activating real Sarvam

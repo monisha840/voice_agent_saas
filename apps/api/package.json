@@ -12,25 +12,32 @@
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
-    "db:seed": "tsx src/scripts/seed.ts"
+    "db:seed": "tsx src/scripts/seed.ts",
+    "org:create": "tsx src/scripts/create-org.ts",
+    "demo:call": "tsx src/scripts/demo-call.ts"
   },
   "dependencies": {
-    "fastify": "^4.28.1",
+    "@fastify/cookie": "^9.4.0",
     "@fastify/cors": "^9.0.1",
-    "@fastify/websocket": "^10.0.1",
     "@fastify/formbody": "^7.4.0",
+    "@fastify/rate-limit": "^9.1.0",
+    "@fastify/websocket": "^10.0.1",
+    "dotenv": "^16.4.5",
     "drizzle-orm": "^0.33.0",
+    "fastify": "^4.28.1",
     "postgres": "^3.4.4",
-    "dotenv": "^16.4.5"
+    "ws": "8.22.0",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
-    "drizzle-kit": "^0.24.2",
-    "tsx": "^4.19.0",
-    "typescript": "^5.5.4",
-    "eslint": "^8.57.0",
+    "@types/ws": "^8.18.2",
     "@typescript-eslint/eslint-plugin": "^7.18.0",
     "@typescript-eslint/parser": "^7.18.0",
+    "drizzle-kit": "^0.24.2",
+    "eslint": "^8.57.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.4",
     "vitest": "^2.0.5"
   }
 }

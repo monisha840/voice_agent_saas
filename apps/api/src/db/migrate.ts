@@ -14,14 +14,15 @@ import { dirname, join } from "node:path";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const databaseUrl = process.env.DATABASE_URL;
+// Prefer a direct (non-pooled) connection for migrations when one is provided (e.g. Supabase).
+const databaseUrl = process.env.DATABASE_MIGRATION_URL || process.env.DATABASE_URL;
 
 if (!databaseUrl) {
   throw new Error("DATABASE_URL is not set. Copy .env.example to .env and configure it.");
 }
 
 async function main() {
-  const migrationClient = postgres(databaseUrl!, { max: 1 });
+  const migrationClient = postgres(databaseUrl!, { max: 1, ssl: process.env.DATABASE_SSL === "require" ? "require" : undefined });
   const db = drizzle(migrationClient);
 
   console.log("Running migrations...");

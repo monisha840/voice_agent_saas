@@ -22,7 +22,9 @@ export function CallExperience({
   leadId,
   initial,
   onUpdated,
+  agentId,
 }: {
+  agentId?: string;
   leadId: string;
   initial: LeadDetail;
   onUpdated: (lead: LeadDetail) => void;
@@ -61,7 +63,7 @@ export function CallExperience({
     setError(null);
     setUiState("calling");
     try {
-      await api.callLead(leadId);
+      await api.callLead(leadId, agentId);
       startPolling();
     } catch (err) {
       setUiState("failed");

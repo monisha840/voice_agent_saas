@@ -1,16 +1,23 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll } from "vitest";
+import type { RequestContext } from "../../auth/context.js";
+import { demoContext } from "../../test/helpers.js";
 import { projectsService } from "./projects.service.js";
 
 describe("projectsService (against seeded DB)", () => {
+  let ctx: RequestContext;
+  beforeAll(async () => {
+    ctx = await demoContext();
+  });
+
   it("getDefaultProject returns the seeded Green Valley Residency project", async () => {
-    const project = await projectsService.getDefaultProject();
+    const project = await projectsService.getDefaultProject(ctx);
     expect(project.name).toBe("Green Valley Residency");
     expect(project.location).toContain("Bangalore");
   });
 
   it("getKnowledgeByCategory returns pricing with 2 BHK and 3 BHK ranges", async () => {
-    const project = await projectsService.getDefaultProject();
-    const [pricing] = await projectsService.getKnowledgeByCategory({
+    const project = await projectsService.getDefaultProject(ctx);
+    const [pricing] = await projectsService.getKnowledgeByCategory(ctx, {
       projectId: project.id,
       category: "pricing",
     });
@@ -21,8 +28,8 @@ describe("projectsService (against seeded DB)", () => {
   });
 
   it("getProjectWithKnowledge includes all 6 knowledge categories", async () => {
-    const project = await projectsService.getDefaultProject();
-    const full = await projectsService.getProjectWithKnowledge({ projectId: project.id });
+    const project = await projectsService.getDefaultProject(ctx);
+    const full = await projectsService.getProjectWithKnowledge(ctx, { projectId: project.id });
 
     expect(full).not.toBeNull();
     const categories = full!.knowledge.map((k) => k.category);

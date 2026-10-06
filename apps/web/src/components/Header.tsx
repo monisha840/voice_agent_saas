@@ -1,53 +1,178 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { Building2 } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
+import { AudioLines, ChevronDown, LogOut } from "lucide-react";
+import { api, type AuthUser } from "@/lib/api";
+import { can } from "@/lib/permissions";
+import { ORG_MODULES_CHANGED_EVENT, hasModule } from "@/lib/modules";
+import { Badge } from "@/components/ui";
 
 /**
- * Top navigation. "Overview" and "Leads" both point at the dashboard
- * route (one screen already covers both, per the existing MVP) — only
- * "Demo" is a genuinely separate route, added for the MD walkthrough.
- * No nav item links anywhere the API doesn't actually back.
+ * Top navigation. The Voice AI core (Overview, Agents, Calls, Test, Usage, Team,
+ * Settings) is always present; optional modules add their own group after a
+ * divider, shown only when the organization has the module enabled. Items are
+ * shown only to roles that can use them; the API enforces the same rules regardless.
  */
 export function Header() {
   const pathname = usePathname();
+  const router = useRouter();
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
 
-  const navItems = [
-    { label: "Overview", href: "/", active: pathname === "/" },
-    { label: "Leads", href: "/", active: pathname.startsWith("/leads") },
-    { label: "Demo", href: "/demo", active: pathname === "/demo" },
-  ];
+  useEffect(() => {
+    api
+      .me()
+      .then(setUser)
+      .catch(() => setUser(null));
+  }, []);
+
+  // Module toggles in Settings change what the navigation shows; reload who-am-I when that happens.
+  useEffect(() => {
+    const reload = () => {
+      api
+        .me()
+        .then(setUser)
+        .catch(() => undefined); // keep the current navigation if the refresh fails
+    };
+    window.addEventListener(ORG_MODULES_CHANGED_EVENT, reload);
+    return () => window.removeEventListener(ORG_MODULES_CHANGED_EVENT, reload);
+  }, []);
+
+  const org = user?.organization ?? null;
+  const role = org?.role ?? null;
+  const orgs = user?.organizations ?? [];
+
+  const coreItems = [
+    { label: "Overview", href: "/", active: pathname === "/", show: true },
+    { label: "Agents", href: "/agents", active: pathname.startsWith("/agents"), show: can(role, "agents:read") },
+    { label: "Calls", href: "/calls", active: pathname.startsWith("/calls"), show: can(role, "calls:read") },
+    { label: "Test", href: "/test", active: pathname.startsWith("/test"), show: can(role, "calls:create") },
+    { label: "Usage", href: "/usage", active: pathname.startsWith("/usage"), show: can(role, "usage:read") },
+    { label: "Team", href: "/team", active: pathname.startsWith("/team"), show: can(role, "users:read") },
+    { label: "Settings", href: "/settings", active: pathname.startsWith("/settings"), show: can(role, "audit:read") },
+  ].filter((i) => i.show);
+
+  const salesItems = hasModule(org, "sales")
+    ? [
+        { label: "Leads", href: "/leads", active: pathname.startsWith("/leads") },
+        { label: "Projects", href: "/projects", active: pathname.startsWith("/projects") },
+        { label: "Site Visits", href: "/site-visits", active: pathname.startsWith("/site-visits") },
+        { label: "Demo", href: "/demo", active: pathname === "/demo" },
+      ]
+    : [];
+
+  async function switchOrg(organizationId: string) {
+    setBusy(true);
+    try {
+      await api.switchOrganization(organizationId);
+      const me = await api.me();
+      setUser(me);
+      setMenuOpen(false);
+      router.push("/");
+      router.refresh();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function signOut() {
+    try {
+      await api.logout();
+    } finally {
+      router.push("/login");
+      router.refresh();
+    }
+  }
 
   return (
     <header className="border-b border-stone-200 bg-white">
-      <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
+      <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-x-6 gap-y-2 px-4 py-3 sm:px-6 sm:py-4">
         <Link href="/" className="flex items-center gap-3">
           <div className="flex h-9 w-9 items-center justify-center rounded-md bg-emerald-700 text-white">
-            <Building2 size={18} strokeWidth={2} />
+            <AudioLines size={18} strokeWidth={2} />
           </div>
           <div className="leading-tight">
-            <div className="text-sm font-semibold text-stone-900">Green Valley Developers</div>
-            <div className="text-xs text-stone-500">Voice AI Sales Console</div>
+            <div className="text-sm font-semibold text-stone-900">{org?.name ?? "Voice AI"}</div>
+            <div className="text-xs text-stone-500">Voice AI</div>
           </div>
         </Link>
 
-        <nav className="flex items-center gap-1 text-sm">
-          {navItems.map((item) => (
-            <Link
-              key={item.label}
-              href={item.href}
-              className={`rounded-md px-3 py-1.5 font-medium transition ${
-                item.active
-                  ? "bg-stone-100 text-stone-900"
-                  : "text-stone-600 hover:bg-stone-100 hover:text-stone-900"
-              }`}
-            >
-              {item.label}
-            </Link>
+        <nav className="order-3 flex w-full items-center gap-1 overflow-x-auto text-sm md:order-none md:w-auto">
+          {coreItems.map((item) => (
+            <NavLink key={item.label} {...item} />
           ))}
+          {salesItems.length > 0 && (
+            <>
+              <span aria-hidden className="mx-1 h-5 w-px shrink-0 bg-stone-200" />
+              <span className="shrink-0 px-1 text-xs font-medium uppercase tracking-wide text-stone-400">Sales</span>
+              {salesItems.map((item) => (
+                <NavLink key={item.label} {...item} />
+              ))}
+            </>
+          )}
         </nav>
+
+        {user && (
+          <div className="flex items-center gap-2 text-sm">
+            {role && <Badge tone="success">{role}</Badge>}
+            {orgs.length > 1 ? (
+              <div className="relative">
+                <button
+                  onClick={() => setMenuOpen((o) => !o)}
+                  aria-haspopup="menu"
+                  aria-expanded={menuOpen}
+                  className="inline-flex items-center gap-1 rounded-md border border-stone-300 px-2.5 py-1.5 font-medium text-stone-700 hover:bg-stone-100"
+                >
+                  <span className="max-w-[10rem] truncate">{org?.name ?? "Organization"}</span>
+                  <ChevronDown size={14} />
+                </button>
+                {menuOpen && (
+                  <div
+                    role="menu"
+                    className="absolute right-0 z-40 mt-1 w-56 rounded-md border border-stone-200 bg-white py-1 shadow-lg"
+                  >
+                    {orgs.map((o) => (
+                      <button
+                        key={o.id}
+                        role="menuitem"
+                        disabled={busy || o.id === org?.id}
+                        onClick={() => void switchOrg(o.id)}
+                        className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm text-stone-700 hover:bg-stone-50 disabled:opacity-60"
+                      >
+                        <span className="truncate">{o.name}</span>
+                        <span className="text-xs text-stone-400">{o.id === org?.id ? "current" : o.role}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : null}
+            <button
+              onClick={() => void signOut()}
+              className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 font-medium text-stone-600 hover:bg-stone-100 hover:text-stone-900"
+            >
+              <LogOut size={14} />
+              Sign out
+            </button>
+          </div>
+        )}
       </div>
     </header>
+  );
+}
+
+function NavLink({ label, href, active }: { label: string; href: string; active: boolean }) {
+  return (
+    <Link
+      href={href}
+      className={`whitespace-nowrap rounded-md px-3 py-1.5 font-medium transition ${
+        active ? "bg-stone-100 text-stone-900" : "text-stone-600 hover:bg-stone-100 hover:text-stone-900"
+      }`}
+    >
+      {label}
+    </Link>
   );
 }

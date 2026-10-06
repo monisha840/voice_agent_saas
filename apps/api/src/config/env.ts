@@ -41,6 +41,50 @@ export interface AppConfig {
   databaseUrl: string;
   telephonyProvider: TelephonyProviderKind;
   aiProvider: AiProviderKind;
+  /** End-of-turn detection on the continuous inbound audio stream. */
+  turn: {
+    endSilenceMs: number;
+    energyThreshold: number;
+    minSpeechMs: number;
+    maxUtteranceMs: number;
+  };
+  /** Extra Host header values treated as private/local (comma-separated API_PRIVATE_HOSTS). */
+  privateHosts: string[];
+  auth: {
+    cookieName: string;
+    /** Idle lifetime; refreshed while the session is used. */
+    sessionTtlMs: number;
+    /** Hard cap regardless of activity. */
+    sessionMaxAgeMs: number;
+    cookieSecure: boolean;
+    /** Origins allowed to call the API from a browser (CORS + CSRF check). */
+    allowedOrigins: string[];
+    /** Dev-only "continue as demo" login. Never enabled when NODE_ENV=production unless forced. */
+    demoLoginEnabled: boolean;
+    demoUserEmail: string;
+    scryptN: number;
+  };
+  /** Honor X-Forwarded-* for req.ip. Only enable behind a proxy you control (TRUST_PROXY=true). */
+  trustProxy: boolean;
+  /** Fastify request body cap in bytes. */
+  bodyLimitBytes: number;
+  /** In-memory limits (per process; reset on restart, not shared across instances). */
+  rateLimit: {
+    /** Per-IP default for authenticated API routes. */
+    apiMax: number;
+    apiWindowMs: number;
+    /** Per-organization cap on call initiation. */
+    callsPerOrgMax: number;
+    callsPerOrgWindowMs: number;
+  };
+  /** Reaper for calls whose final provider callback never arrives. */
+  staleCalls: { pendingMs: number; inProgressMs: number; intervalMs: number };
+  /** Local call simulator behind the mock telephony provider. */
+  mockTelephony: {
+    autoplay: boolean;
+    baseUrl: string;
+    scenario: "answered" | "busy" | "no_answer";
+  };
   exotel: {
     apiKey: string;
     apiToken: string;
@@ -49,6 +93,8 @@ export interface AppConfig {
     agentStreamWebhookSecret: string;
     fromNumber: string;
     webhookBaseUrl: string;
+    /** Optional Exotel CallType (omitted from the request when empty). */
+    callType: string;
   };
   sarvam: {
     apiKey: string;
@@ -91,6 +137,51 @@ export function getConfig(): AppConfig {
       ["mock", "sarvam"] as const,
       "mock",
     ),
+    turn: {
+      endSilenceMs: Number(process.env.TURN_END_SILENCE_MS ?? 700),
+      energyThreshold: Number(process.env.TURN_ENERGY_THRESHOLD ?? 500),
+      minSpeechMs: Number(process.env.TURN_MIN_SPEECH_MS ?? 250),
+      maxUtteranceMs: Number(process.env.TURN_MAX_UTTERANCE_MS ?? 15000),
+    },
+    privateHosts: (process.env.API_PRIVATE_HOSTS ?? "")
+      .split(",")
+      .map((h) => h.trim().toLowerCase())
+      .filter(Boolean),
+    auth: {
+      cookieName: process.env.SESSION_COOKIE_NAME ?? "va_session",
+      sessionTtlMs: Number(process.env.SESSION_TTL_MS ?? 7 * 24 * 3600_000),
+      sessionMaxAgeMs: Number(process.env.SESSION_MAX_AGE_MS ?? 30 * 24 * 3600_000),
+      cookieSecure: (process.env.COOKIE_SECURE ?? (process.env.NODE_ENV === "production" ? "true" : "false")) === "true",
+      allowedOrigins: (process.env.WEB_ORIGINS ?? "http://127.0.0.1:3000,http://localhost:3000")
+        .split(",")
+        .map((o) => o.trim())
+        .filter(Boolean),
+      demoLoginEnabled: (process.env.DEMO_LOGIN_ENABLED ?? (process.env.NODE_ENV === "production" ? "false" : "true")) === "true",
+      demoUserEmail: process.env.DEMO_USER_EMAIL ?? "demo@greenvalley.demo",
+      scryptN: Number(process.env.AUTH_SCRYPT_N ?? 32768),
+    },
+    trustProxy: process.env.TRUST_PROXY === "true",
+    bodyLimitBytes: Number(process.env.BODY_LIMIT_BYTES ?? 256 * 1024),
+    rateLimit: {
+      apiMax: Number(process.env.RATE_LIMIT_API_MAX ?? 300),
+      apiWindowMs: Number(process.env.RATE_LIMIT_API_WINDOW_MS ?? 60_000),
+      callsPerOrgMax: Number(process.env.RATE_LIMIT_CALLS_PER_ORG_MAX ?? 10),
+      callsPerOrgWindowMs: Number(process.env.RATE_LIMIT_CALLS_PER_ORG_WINDOW_MS ?? 60_000),
+    },
+    staleCalls: {
+      pendingMs: Number(process.env.STALE_CALL_PENDING_MS ?? 10 * 60_000),
+      inProgressMs: Number(process.env.STALE_CALL_IN_PROGRESS_MS ?? 45 * 60_000),
+      intervalMs: Number(process.env.STALE_CALL_CHECK_INTERVAL_MS ?? 60_000),
+    },
+    mockTelephony: {
+      autoplay: (process.env.MOCK_TELEPHONY_AUTOPLAY ?? "true") !== "false",
+      baseUrl: process.env.MOCK_TELEPHONY_BASE_URL ?? `http://127.0.0.1:${process.env.PORT_API ?? 4000}`,
+      scenario: readProviderKind(
+        process.env.MOCK_CALL_SCENARIO,
+        ["answered", "busy", "no_answer"] as const,
+        "answered",
+      ),
+    },
     exotel: {
       apiKey: process.env.EXOTEL_API_KEY ?? "",
       apiToken: process.env.EXOTEL_API_TOKEN ?? "",
@@ -99,6 +190,7 @@ export function getConfig(): AppConfig {
       agentStreamWebhookSecret: process.env.EXOTEL_AGENTSTREAM_WEBHOOK_SECRET ?? "",
       fromNumber: process.env.EXOTEL_FROM_NUMBER ?? "",
       webhookBaseUrl: process.env.EXOTEL_WEBHOOK_BASE_URL ?? "",
+      callType: process.env.EXOTEL_CALL_TYPE ?? "",
     },
     sarvam: {
       apiKey: process.env.SARVAM_API_KEY ?? "",

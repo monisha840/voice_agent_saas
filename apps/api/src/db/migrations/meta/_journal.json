@@ -8,6 +8,69 @@
       "when": 1791116333578,
       "tag": "0000_brown_sasquatch",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1791201198437,
+      "tag": "0001_solid_leader",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791202017057,
+      "tag": "0002_flimsy_energizer",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1791202074560,
+      "tag": "0003_brave_ogun",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1791202753548,
+      "tag": "0004_narrow_wendell_vaughn",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1791202995393,
+      "tag": "0005_hesitant_juggernaut",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791207170297,
+      "tag": "0006_yummy_revanche",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1791210462064,
+      "tag": "0007_harsh_metal_master",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1791264086079,
+      "tag": "0008_clear_warbound",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1791265211568,
+      "tag": "0009_next_eddie_brock",
+      "breakpoints": true
     }
   ]
 }

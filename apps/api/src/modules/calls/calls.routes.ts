@@ -1,12 +1,63 @@
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
+import { callStatusEnum, callTypeEnum } from "../../db/schema.js";
+import { ProviderConfigError, ProviderRequestError } from "../../shared/errors.js";
+import { callRateLimitPreHandler } from "../../security/rate-limits.js";
+import { parseInput } from "../../shared/validation.js";
 import { callsService } from "./calls.service.js";
 import { getTelephonyProvider } from "../../adapters/telephony/index.js";
 import { handleExotelMediaStream } from "../../websocket/exotel-media-stream.handler.js";
+import { isTelephonyAuthorized } from "../../security/telephony-auth.js";
+import { requireContext } from "../../auth/auth.plugin.js";
+import { systemContext } from "../../auth/context.js";
 import { logger } from "../../shared/logger.js";
 
+const listQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(25),
+  before: z.string().max(40).refine((v) => !Number.isNaN(Date.parse(v)), "must be an ISO timestamp").optional(),
+  status: z.enum(callStatusEnum.enumValues).optional(),
+  agentId: z.string().uuid().optional(),
+  callType: z.enum(callTypeEnum.enumValues).optional(),
+});
+
+/** "test" runs a simulated call when no number is given; "outbound" needs a number or a lead. Inbound calls arrive via telephony, never from here. */
+const placeCallBody = z
+  .object({
+    agentId: z.string().uuid(),
+    callType: z.enum(["outbound", "test"]),
+    toNumber: z.string().trim().min(3).max(32).optional(),
+    leadId: z.string().uuid().optional(),
+  })
+  .strict();
+
 export async function callsRoutes(app: FastifyInstance) {
+  app.get("/api/calls", async (req, reply) => {
+    const q = parseInput(listQuery, req.query);
+    return reply.send(
+      await callsService.listCalls(requireContext(req), { ...q, before: q.before ? new Date(q.before) : undefined }),
+    );
+  });
+
+  app.post("/api/calls", { preHandler: callRateLimitPreHandler }, async (req, reply) => {
+    const body = parseInput(placeCallBody, req.body);
+    try {
+      const result = await callsService.placeCall(requireContext(req), body);
+      return reply.status(202).send({ data: result });
+    } catch (err) {
+      if (err instanceof ProviderConfigError) {
+        logger.warn("calls.routes: call blocked by missing provider config", { provider: err.provider });
+        return reply.status(503).send({ error: `Telephony provider not configured: ${err.message}`, code: "PROVIDER_NOT_CONFIGURED" });
+      }
+      if (err instanceof ProviderRequestError) {
+        logger.error("calls.routes: provider rejected call", { provider: err.provider, error: err.message });
+        return reply.status(502).send({ error: "The telephony provider could not place the call.", code: "PROVIDER_ERROR" });
+      }
+      throw err;
+    }
+  });
+
   app.get<{ Params: { id: string } }>("/api/calls/:id", async (req, reply) => {
-    const call = await callsService.getCallDetail({ callId: req.params.id });
+    const call = await callsService.getCallDetail(requireContext(req), { callId: req.params.id });
     if (!call) {
       return reply.status(404).send({ error: "Call not found" });
     }
@@ -15,27 +66,42 @@ export async function callsRoutes(app: FastifyInstance) {
 
   /**
    * Exotel calls this URL (configured as StatusCallback on the
-   * Calls/connect request) as the call progresses: ringing -> answered
-   * -> completed. We correlate back to our call record via the
-   * provider's own call id embedded in the callback payload.
+   * Calls/connect request) as the call progresses: answered -> terminal.
+   * Exotel requires an HTTP 200 within 15 seconds and retries otherwise, so
+   * we apply the status change, reply immediately, and run the (slow,
+   * LLM-backed) post-call finalization in the background. Finalization is
+   * idempotent, so a retried callback cannot duplicate anything.
    */
   app.post("/api/telephony/exotel/status-callback", async (req, reply) => {
+    if (!isTelephonyAuthorized(req)) {
+      logger.warn("calls.routes: unauthorized status callback rejected");
+      return reply.status(401).send({ error: "Unauthorized" });
+    }
     const provider = getTelephonyProvider();
     try {
-      const parsed = provider.parseStatusCallback(req.body as Record<string, unknown>);
-      await callsService.updateStatusFromProvider({
+      const parsed = provider.parseStatusCallback((req.body ?? {}) as Record<string, unknown>);
+      const { call, finalizeCallId } = await callsService.applyProviderStatus({
         providerCallId: parsed.providerCallId,
         status: parsed.status,
         durationSeconds: parsed.durationSeconds,
         recordingUrl: parsed.recordingUrl,
       });
+      if (finalizeCallId && call) {
+        void callsService
+          .finalizeCall(systemContext(call.organizationId, "exotel-webhook"), { callId: finalizeCallId }).catch((err: unknown) => {
+          logger.error("calls.routes: post-call finalization failed", {
+            callId: finalizeCallId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+      }
       return reply.status(200).send({ ok: true });
     } catch (err) {
       logger.error("calls.routes: failed to process status callback", {
         error: err instanceof Error ? err.message : String(err),
       });
-      // Always 200 to a webhook sender even on internal failure, so the
-      // provider doesn't retry-storm us; the failure is logged server-side.
+      // 200 even on internal failure so the provider doesn't retry-storm us;
+      // the failure is logged server-side.
       return reply.status(200).send({ ok: false });
     }
   });
@@ -45,14 +111,16 @@ export async function callsRoutes(app: FastifyInstance) {
    * the call is answered, Exotel connects here (the StreamUrl we gave
    * it on Calls/connect) and streams bidirectional audio. See
    * websocket/exotel-media-stream.handler.ts for the frame protocol.
+   * `internalCallId` is optional: if Exotel does not pass our query string
+   * through, the handler resolves the call from the start event's call_sid.
    */
   app.get("/api/telephony/exotel/media-stream", { websocket: true }, (socket, req) => {
-    const internalCallId = (req.query as Record<string, string>)?.internalCallId;
-    if (!internalCallId) {
-      logger.warn("media-stream: connection without internalCallId, closing");
-      socket.close();
+    if (!isTelephonyAuthorized(req)) {
+      logger.warn("media-stream: unauthorized connection rejected");
+      socket.close(1008, "unauthorized");
       return;
     }
-    void handleExotelMediaStream(socket, internalCallId);
+    const internalCallId = (req.query as Record<string, string | undefined>)?.internalCallId;
+    handleExotelMediaStream(socket, { internalCallId });
   });
 }

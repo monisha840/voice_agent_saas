@@ -6,16 +6,20 @@ import { leadsService } from "../leads/leads.service.js";
 import { callsService } from "../calls/calls.service.js";
 import { conversationsRepository } from "../../db/repositories/conversations.repository.js";
 import type { ToolExecutionContext } from "../../ai-tools/types.js";
+import type { RequestContext } from "../../auth/context.js";
+import { demoContext } from "../../test/helpers.js";
 
 describe("ConversationSession (text-only harness, mock LLM, real tool/service layer)", () => {
   let ctx: ToolExecutionContext;
+  let org: RequestContext;
 
   beforeAll(async () => {
-    const project = await projectsService.getDefaultProject();
-    const leads = await leadsService.listLeads();
+    org = await demoContext();
+    const project = await projectsService.getDefaultProject(org);
+    const leads = await leadsService.listLeads(org);
     const lead = leads.find((l) => l.name === "Sunita Rao")!;
-    const call = await callsService.createCall({ leadId: lead.id });
-    ctx = { leadId: lead.id, projectId: project.id, callId: call.id };
+    const call = await callsService.createCall(org, { leadId: lead.id });
+    ctx = { organizationId: org.organizationId, subject: { leadId: lead.id, projectId: project.id }, callId: call.id };
   });
 
   it("start() produces an opening spoken line and persists it as an 'ai' turn", async () => {
@@ -28,7 +32,7 @@ describe("ConversationSession (text-only harness, mock LLM, real tool/service la
     expect(result.spokenText).toBeTruthy();
     expect(result.shouldEndCall).toBe(false);
 
-    const conversation = await conversationsRepository.findByCallId({ callId: ctx.callId });
+    const conversation = await conversationsRepository.findByCallId({ organizationId: ctx.organizationId, callId: ctx.callId });
     const transcript = conversation!.transcript as Array<{ speaker: string }>;
     expect(transcript.some((t) => t.speaker === "ai")).toBe(true);
   });
@@ -43,7 +47,7 @@ describe("ConversationSession (text-only harness, mock LLM, real tool/service la
     const result = await session.handleUserUtterance("What is the price of a 2 BHK?");
     expect(result.spokenText.toLowerCase()).toContain("mock response");
 
-    const conversation = await conversationsRepository.findByCallId({ callId: ctx.callId });
+    const conversation = await conversationsRepository.findByCallId({ organizationId: ctx.organizationId, callId: ctx.callId });
     const transcript = conversation!.transcript as Array<{ speaker: string; text: string }>;
     expect(transcript.some((t) => t.speaker === "lead" && t.text.includes("price"))).toBe(true);
   });

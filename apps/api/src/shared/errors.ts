@@ -39,3 +39,27 @@ export class ValidationError extends Error {
     this.name = "ValidationError";
   }
 }
+
+/** No valid login (401-shaped). */
+export class UnauthorizedError extends Error {
+  constructor(message = "Authentication required") {
+    super(message);
+    this.name = "UnauthorizedError";
+  }
+}
+
+/** Logged in, but not allowed to do this (403-shaped). */
+export class ForbiddenError extends Error {
+  constructor(message = "You do not have permission to do this") {
+    super(message);
+    this.name = "ForbiddenError";
+  }
+}
+
+/** The request conflicts with current state, e.g. a duplicate (409-shaped). */
+export class ConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ConflictError";
+  }
+}

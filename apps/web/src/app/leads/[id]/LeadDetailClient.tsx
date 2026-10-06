@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   Building2,
@@ -19,10 +20,27 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { CallExperience } from "@/components/CallExperience";
 import { EmptyState } from "@/components/StateViews";
 import { formatBudgetRange, formatDateTime, formatDuration } from "@/lib/format";
-import type { LeadDetail } from "@/lib/types";
+import { api } from "@/lib/api";
+import { can } from "@/lib/permissions";
+import { Button, errorMessage } from "@/components/ui";
+import { LeadFormModal } from "@/components/LeadForm";
+import type { LeadDetail, Project, Role, TeamMember } from "@/lib/types";
 
-export function LeadDetailClient({ initial }: { initial: LeadDetail }) {
+export function LeadDetailClient({
+  initial,
+  role = null,
+  projects = [],
+  assignees = [],
+}: {
+  initial: LeadDetail;
+  role?: Role | null;
+  projects?: Project[];
+  assignees?: TeamMember[];
+}) {
+  const router = useRouter();
   const [lead, setLead] = useState<LeadDetail>(initial);
+  const [editing, setEditing] = useState(false);
+  const project = projects.find((p) => p.id === lead.projectId);
 
   const latestCall = lead.callHistory[0] ?? null;
   const conversation = lead.latestConversation;
@@ -36,7 +54,7 @@ export function LeadDetailClient({ initial }: { initial: LeadDetail }) {
 
       <div className="mx-auto max-w-6xl px-6 py-8">
         <Link
-          href="/"
+          href="/leads"
           className="inline-flex items-center gap-1 text-sm text-stone-500 transition hover:text-stone-800"
         >
           <ChevronLeft size={14} />
@@ -52,8 +70,30 @@ export function LeadDetailClient({ initial }: { initial: LeadDetail }) {
               {formatBudgetRange(lead.budgetMin, lead.budgetMax)}
             </p>
           </div>
-          <StatusBadge status={lead.status} />
+          <div className="flex items-center gap-3">
+            {can(role, "leads:update") && (
+              <Button variant="secondary" onClick={() => setEditing(true)}>
+                Edit details
+              </Button>
+            )}
+            <StatusBadge status={lead.status} />
+          </div>
         </section>
+
+        {editing && (
+          <LeadFormModal
+            lead={lead}
+            projects={projects}
+            assignees={assignees}
+            canAssign={false}
+            onClose={() => setEditing(false)}
+            onSaved={(saved) => {
+              setLead((prev) => ({ ...prev, ...saved, callHistory: prev.callHistory, siteVisits: prev.siteVisits, latestConversation: prev.latestConversation }));
+              setEditing(false);
+              router.refresh();
+            }}
+          />
+        )}
 
         {/* Call result banner — only rendered when the backend actually
             reports a completed call with a summary. */}
@@ -82,7 +122,7 @@ export function LeadDetailClient({ initial }: { initial: LeadDetail }) {
         <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
           {/* Main column */}
           <div className="space-y-6 lg:col-span-2">
-            <LeadOverviewCard lead={lead} />
+            <LeadOverviewCard lead={lead} projectName={project?.name} />
 
             {qualification ? (
               <QualificationCard qualification={qualification} />
@@ -133,12 +173,20 @@ export function LeadDetailClient({ initial }: { initial: LeadDetail }) {
             </SectionShell>
 
             <SectionShell title="Project" icon={Building2}>
-              <div className="text-sm font-medium text-stone-900">Green Valley Residency</div>
+              <div className="text-sm font-medium text-stone-900">
+                {project?.name ?? "Green Valley Residency"}
+              </div>
               <div className="mt-1 flex items-center gap-1 text-sm text-stone-500">
                 <MapPin size={13} />
-                Whitefield, Bangalore
+                {project?.location ?? "Whitefield, Bangalore"}
               </div>
             </SectionShell>
+
+            {can(role, "leads:assign") && (
+              <SectionShell title="Assignee" icon={Phone}>
+                <AssigneeControl lead={lead} assignees={assignees} onChange={(l) => setLead((prev) => ({ ...prev, ...l }))} />
+              </SectionShell>
+            )}
 
             <SectionShell title="Site Visit" icon={Calendar}>
               {latestVisit ? (
@@ -187,12 +235,13 @@ function SectionShell({
   );
 }
 
-function LeadOverviewCard({ lead }: { lead: LeadDetail }) {
+function LeadOverviewCard({ lead, projectName }: { lead: LeadDetail; projectName?: string }) {
   const fields: Array<{ label: string; value: string }> = [
     { label: "Phone", value: lead.phone },
     { label: "Configuration", value: lead.requirementConfig ?? "Not captured" },
     { label: "Budget", value: formatBudgetRange(lead.budgetMin, lead.budgetMax) },
-    { label: "Project", value: "Green Valley Residency" },
+    { label: "Project", value: projectName ?? "Green Valley Residency" },
+    { label: "Assigned to", value: lead.assigneeName ?? "Unassigned" },
     { label: "Created", value: formatDateTime(lead.createdAt) },
   ];
 
@@ -319,4 +368,51 @@ function CallHistoryCard({ calls }: { calls: LeadDetail["callHistory"] }) {
 
 function cap(s: string) {
   return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function AssigneeControl({
+  lead,
+  assignees,
+  onChange,
+}: {
+  lead: LeadDetail;
+  assignees: TeamMember[];
+  onChange: (l: Partial<LeadDetail>) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function assign(userId: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.assignLead(lead.id, userId || null);
+      const name = assignees.find((u) => u.userId === userId)?.name ?? null;
+      onChange({ assignedUserId: userId || null, assigneeName: name });
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div>
+      <select
+        value={lead.assignedUserId ?? ""}
+        disabled={busy}
+        onChange={(e) => void assign(e.target.value)}
+        aria-label="Assignee"
+        className="w-full rounded-md border border-stone-300 bg-white px-3 py-2 text-sm focus:border-emerald-600 focus:outline-none disabled:opacity-60"
+      >
+        <option value="">Unassigned</option>
+        {assignees.map((u) => (
+          <option key={u.userId} value={u.userId}>
+            {u.name} ({u.role})
+          </option>
+        ))}
+      </select>
+      {error && <p className="mt-2 text-xs text-red-600">{error}</p>}
+    </div>
+  );
 }

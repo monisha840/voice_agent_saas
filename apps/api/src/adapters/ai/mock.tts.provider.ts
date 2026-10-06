@@ -5,10 +5,9 @@
  */
 import type { ITextToSpeech, TtsResult } from "./tts.interface.js";
 
-/** Minimal valid 8kHz mono 16-bit PCM WAV header + ~0.1s of silence. */
-function buildSilentWav(): Buffer {
-  const sampleRate = 8000;
-  const numSamples = Math.floor(sampleRate * 0.1);
+/** Minimal valid 8kHz mono 16-bit PCM WAV header + 0.5s of silence. */
+function buildSilentWav(sampleRate: number): Buffer {
+  const numSamples = Math.floor(sampleRate * 0.5);
   const dataSize = numSamples * 2;
   const buffer = Buffer.alloc(44 + dataSize);
 
@@ -33,7 +32,7 @@ function buildSilentWav(): Buffer {
 export class MockTtsProvider implements ITextToSpeech {
   readonly name = "mock-tts";
 
-  async synthesize(_text: string): Promise<TtsResult> {
-    return { audio: buildSilentWav(), format: "wav" };
+  async synthesize(_text: string, opts?: { languageCode?: string; sampleRate?: number }): Promise<TtsResult> {
+    return { audio: buildSilentWav(opts?.sampleRate ?? 8000), format: "wav" };
   }
 }

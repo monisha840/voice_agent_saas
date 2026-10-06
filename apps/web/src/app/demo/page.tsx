@@ -16,9 +16,10 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { Header } from "@/components/Header";
-import { ErrorState } from "@/components/StateViews";
+import { ErrorState, ModuleDisabled } from "@/components/StateViews";
 import { formatBudgetRange } from "@/lib/format";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api.server";
+import { hasModule } from "@/lib/modules";
 
 const FLOW_STEPS = [
   { n: "01", title: "Lead", desc: "A new lead enters the system with a requirement and budget." },
@@ -130,6 +131,17 @@ export default async function DemoPage() {
   let loadError: string | null = null;
 
   try {
+    const me = await api.me();
+    if (!hasModule(me.organization, "sales")) {
+      return (
+        <main className="min-h-screen bg-stone-50">
+          <Header />
+          <div className="mx-auto max-w-6xl px-6 py-16">
+            <ModuleDisabled />
+          </div>
+        </main>
+      );
+    }
     const leads = await api.listLeads();
     const rajesh = leads.find((l) => l.name === "Rajesh Kumar");
     if (rajesh) {
@@ -137,8 +149,11 @@ export default async function DemoPage() {
       demoLeadConfig = rajesh.requirementConfig ?? "Requirement not captured";
       demoLeadBudget = formatBudgetRange(rajesh.budgetMin, rajesh.budgetMax);
     }
-  } catch {
-    loadError = "Could not reach the API. The Live Demo section needs the backend running.";
+  } catch (err) {
+    loadError =
+      err instanceof ApiError && err.status === 403 && /module/i.test(err.message)
+        ? "The Sales module is not enabled for this organization. An owner can turn it on in Settings."
+        : "Could not reach the API. The Live Demo section needs the backend running.";
   }
 
   return (
@@ -150,7 +165,7 @@ export default async function DemoPage() {
         <section className="text-center">
           <div className="mx-auto inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-200">
             <Sparkles size={12} />
-            Product Demonstration
+            Sales module demo
           </div>
           <h1 className="mt-4 text-3xl font-semibold tracking-tight text-stone-900">
             Real Estate Voice AI

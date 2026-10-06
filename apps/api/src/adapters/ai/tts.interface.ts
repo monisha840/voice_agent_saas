@@ -7,5 +7,6 @@ export interface TtsResult {
 
 export interface ITextToSpeech {
   readonly name: string;
-  synthesize(text: string, opts?: { languageCode?: string }): Promise<TtsResult>;
+  /** `sampleRate`: preferred output rate in Hz (Exotel needs 8000 by default). */
+  synthesize(text: string, opts?: { languageCode?: string; sampleRate?: number }): Promise<TtsResult>;
 }

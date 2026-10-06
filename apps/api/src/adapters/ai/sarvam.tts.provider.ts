@@ -2,7 +2,7 @@
  * Real Sarvam Bulbul TTS adapter.
  *
  * Endpoint (documented): POST https://api.sarvam.ai/text-to-speech
- * Body: { text, target_language_code, speaker, model }
+ * Body: { text, language_code, speaker, model, speech_sample_rate, output_audio_codec }
  * Response: { audios: [base64WavString, ...] }
  * Reference: https://docs.sarvam.ai/api-reference-docs/api-guides-tutorials/text-to-speech/rest-api
  *
@@ -18,7 +18,7 @@ const SARVAM_TTS_URL = "https://api.sarvam.ai/text-to-speech";
 export class SarvamTtsProvider implements ITextToSpeech {
   readonly name = "sarvam-bulbul";
 
-  async synthesize(text: string, opts?: { languageCode?: string }): Promise<TtsResult> {
+  async synthesize(text: string, opts?: { languageCode?: string; sampleRate?: number }): Promise<TtsResult> {
     const { sarvam } = getConfig();
     if (!sarvam.apiKey) {
       throw new ProviderConfigError(
@@ -29,9 +29,13 @@ export class SarvamTtsProvider implements ITextToSpeech {
 
     const body = {
       text,
-      target_language_code: opts?.languageCode ?? "en-IN",
+      // Per current Sarvam docs the field is `language_code` (we previously sent `target_language_code`).
+      language_code: opts?.languageCode ?? "en-IN",
       speaker: "shubh",
       model: sarvam.ttsModel,
+      // WAV at the telephony rate; our audio layer strips the header and resamples if Sarvam returns another rate.
+      speech_sample_rate: opts?.sampleRate ?? 8000,
+      output_audio_codec: "wav",
     };
 
     let response: Response;

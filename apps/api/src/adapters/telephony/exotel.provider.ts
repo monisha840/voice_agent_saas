@@ -1,24 +1,29 @@
 /**
  * Real Exotel telephony adapter.
  *
- * Implements outbound call initiation using Exotel's documented
- * "Connect Two Numbers" Voice API:
- *   POST https://{api_key}:{api_token}@api.exotel.com/v1/Accounts/{account_sid}/Calls/connect
- *   (Mumbai region: api.in.exotel.com — selected here via EXOTEL_SUBDOMAIN)
+ * Places an outbound call with Exotel's "Connect Voice AI" API:
+ *   POST https://{api_key}:{api_token}@{subdomain}/v1/Accounts/{account_sid}/Calls/connect
+ *   (Basic auth sent as a header; subdomain is api.in.exotel.com for the
+ *   India region or api.exotel.com for Singapore — shown on the dashboard's
+ *   API Settings page and configured via EXOTEL_SUBDOMAIN)
  *   Content-Type: application/x-www-form-urlencoded
  *
- * Reference: https://developer.exotel.com/docs/voice-v3/api-reference/connect-two-numbers
+ *   From       = the CUSTOMER's number (the party Exotel dials)
+ *   CallerId   = our ExoPhone (shown to the customer)
+ *   StreamUrl  = our wss:// AgentStream endpoint (Exotel is the WS client)
+ *   StreamType = bidirectional (full duplex audio on one connection)
  *
- * The call is placed with `StreamUrl` pointing at our AgentStream
- * WebSocket endpoint, so once the call connects Exotel opens a
- * bidirectional media-stream WebSocket to us (Exotel is the WS client;
- * we host the server) per the documented AgentStream/Voicebot Applet
- * contract: https://developer.exotel.com/docs/agentstream/overview
+ * References:
+ *   https://exotel.com/build/one-api-call-your-ai-bot-is-on-the-phone/
+ *   https://developer.exotel.com/docs/agentstream/getting-started
+ *   https://developer.exotel.com/docs/agentstream/websocket-protocol
+ *
+ * Requires Voice Streaming to be enabled on the Exotel account (Exotel
+ * support enables it; it is excluded from the self-serve plans).
  *
  * This file contains ALL Exotel-specific request/response shapes.
  * Nothing outside `adapters/telephony/` may import them.
  */
-
 import type {
   ITelephonyProvider,
   InitiateCallParams,
@@ -32,12 +37,13 @@ import { logger, redact } from "../../shared/logger.js";
 
 /** Exotel's call status strings, mapped to our normalized set. */
 const EXOTEL_STATUS_MAP: Record<string, ParsedStatusCallback["status"]> = {
-  "in-progress": "in_progress",
+  queued: "ringing",
   ringing: "ringing",
+  "in-progress": "in_progress",
   completed: "completed",
-  busy: "failed",
+  busy: "busy",
+  "no-answer": "no_answer",
   failed: "failed",
-  "no-answer": "failed",
   canceled: "failed",
 };
 
@@ -54,6 +60,7 @@ export class ExotelProvider implements ITelephonyProvider {
         ["EXOTEL_SUBDOMAIN", exotel.subdomain],
         ["EXOTEL_FROM_NUMBER", exotel.fromNumber],
         ["EXOTEL_WEBHOOK_BASE_URL", exotel.webhookBaseUrl],
+        ["EXOTEL_AGENTSTREAM_WEBHOOK_SECRET", exotel.agentStreamWebhookSecret],
       ] as const
     )
       .filter(([, value]) => !value)
@@ -66,41 +73,61 @@ export class ExotelProvider implements ITelephonyProvider {
           `Set TELEPHONY_PROVIDER=mock to develop/demo without real Exotel credentials.`,
       );
     }
-
+    if (!/^https:\/\//i.test(exotel.webhookBaseUrl)) {
+      throw new ProviderConfigError(
+        "exotel",
+        "EXOTEL_WEBHOOK_BASE_URL must start with https:// — Exotel connects to a wss:// StreamUrl derived from it.",
+      );
+    }
     return exotel;
+  }
+
+  /**
+   * Builds the exact form body for Calls/connect. Pure (no I/O) so tests
+   * can assert the request shape without credentials or network.
+   */
+  buildConnectRequest(params: InitiateCallParams): URLSearchParams {
+    const exotel = this.assertConfigured();
+    const base = exotel.webhookBaseUrl.replace(/\/+$/, "");
+    const qs = new URLSearchParams({
+      internalCallId: params.internalCallId,
+      token: exotel.agentStreamWebhookSecret,
+    }).toString();
+
+    const body = new URLSearchParams({
+      From: params.toNumber,
+      CallerId: exotel.fromNumber,
+      StreamUrl: `${base.replace(/^https/i, "wss")}/api/telephony/exotel/media-stream?${qs}`,
+      StreamType: "bidirectional",
+      StatusCallback: `${base}/api/telephony/exotel/status-callback?${qs}`,
+      StatusCallbackContentType: "application/json",
+    });
+    body.append("StatusCallbackEvents[0]", "terminal");
+    body.append("StatusCallbackEvents[1]", "answered");
+    if (exotel.callType) body.set("CallType", exotel.callType);
+    return body;
   }
 
   async initiateCall(params: InitiateCallParams): Promise<InitiateCallResult> {
     const exotel = this.assertConfigured();
-
-    const baseUrl = `https://${exotel.subdomain}/v1/Accounts/${exotel.accountSid}/Calls/connect.json`;
+    const body = this.buildConnectRequest(params);
+    const url = `https://${exotel.subdomain}/v1/Accounts/${exotel.accountSid}/Calls/connect.json`;
     const auth = Buffer.from(`${exotel.apiKey}:${exotel.apiToken}`).toString("base64");
 
-    const statusCallbackUrl = `${exotel.webhookBaseUrl}/api/telephony/exotel/status-callback?internalCallId=${encodeURIComponent(params.internalCallId)}`;
-    const streamUrl = `${exotel.webhookBaseUrl.replace(/^http/, "ws")}/api/telephony/exotel/media-stream?internalCallId=${encodeURIComponent(params.internalCallId)}`;
-
-    const body = new URLSearchParams({
-      From: exotel.fromNumber,
-      To: params.toNumber,
-      CallerId: exotel.fromNumber,
-      CallType: "trans",
-      StatusCallback: statusCallbackUrl,
-      StreamUrl: streamUrl,
-    });
-
     logger.info("exotel.initiateCall: requesting", {
-      toNumber: params.toNumber,
+      toNumber: redact(params.toNumber),
       internalCallId: params.internalCallId,
       apiKey: redact(exotel.apiKey),
     });
 
     let response: Response;
     try {
-      response = await fetch(baseUrl, {
+      response = await fetch(url, {
         method: "POST",
         headers: {
           Authorization: `Basic ${auth}`,
           "Content-Type": "application/x-www-form-urlencoded",
+          Accept: "application/json",
         },
         body,
         signal: AbortSignal.timeout(15_000),
@@ -131,32 +158,51 @@ export class ExotelProvider implements ITelephonyProvider {
         "Exotel response did not contain a recognizable Call Sid",
       );
     }
-
     return { providerCallId: callSid, status: "initiating" };
   }
 
+  /**
+   * Parses Exotel's StatusCallback (form-encoded or JSON). With
+   * StatusCallbackEvents the payload carries an `EventType`
+   * (terminal / answered / ringing); without it only terminal callbacks
+   * with `Status` (completed | failed | busy | no-answer) are sent.
+   */
   parseStatusCallback(payload: TelephonyStatusCallbackPayload): ParsedStatusCallback {
     const callSid = String(payload.CallSid ?? payload.Sid ?? "");
-    const rawStatus = String(payload.Status ?? payload.CallStatus ?? "").toLowerCase();
-    const status = EXOTEL_STATUS_MAP[rawStatus] ?? "failed";
-
-    const durationSeconds = payload.Duration ? Number(payload.Duration) : undefined;
-    const recordingUrl = payload.RecordingUrl ? String(payload.RecordingUrl) : undefined;
-
     if (!callSid) {
       throw new ProviderRequestError("exotel", "Status callback payload missing CallSid");
     }
+    const eventType = String(payload.EventType ?? "").toLowerCase();
+    const rawStatus = String(payload.Status ?? payload.CallStatus ?? "").toLowerCase();
 
+    let status: ParsedStatusCallback["status"];
+    if (eventType.includes("answer")) {
+      status = "in_progress";
+    } else if (eventType.includes("ring")) {
+      status = "ringing";
+    } else {
+      const mapped = EXOTEL_STATUS_MAP[rawStatus];
+      if (!mapped) {
+        // Never fail a live call over a status string we do not understand.
+        throw new ProviderRequestError("exotel", `Unrecognized Exotel call status "${rawStatus}"`);
+      }
+      status = mapped;
+    }
+
+    const duration = payload.ConversationDuration ?? payload.Duration;
+    const durationSeconds = duration !== undefined && duration !== "" ? Number(duration) : undefined;
+    const recordingUrl = payload.RecordingUrl ? String(payload.RecordingUrl) : undefined;
     return { providerCallId: callSid, status, durationSeconds, recordingUrl };
   }
 }
 
-/** Exotel's JSON response nests the call under Call.Sid; be lenient about exact shape. */
+/** Exotel's JSON response nests the call under Call.Sid (or call.sid); be lenient about exact shape. */
 function extractCallSid(json: unknown): string | null {
   if (typeof json !== "object" || json === null) return null;
   const obj = json as Record<string, unknown>;
-  const call = obj.Call as Record<string, unknown> | undefined;
+  const call = (obj.Call ?? obj.call) as Record<string, unknown> | undefined;
   if (call && typeof call.Sid === "string") return call.Sid;
+  if (call && typeof call.sid === "string") return call.sid;
   if (typeof obj.Sid === "string") return obj.Sid;
   return null;
 }

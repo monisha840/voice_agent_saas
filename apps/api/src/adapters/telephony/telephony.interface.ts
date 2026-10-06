@@ -22,7 +22,7 @@ export type TelephonyStatusCallbackPayload = Record<string, unknown>;
 
 export interface ParsedStatusCallback {
   providerCallId: string;
-  status: "ringing" | "in_progress" | "completed" | "failed";
+  status: "ringing" | "in_progress" | "completed" | "busy" | "no_answer" | "failed";
   /** Present once the call has actually ended. */
   durationSeconds?: number;
   recordingUrl?: string;

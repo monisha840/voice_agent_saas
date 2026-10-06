@@ -1,6 +1,11 @@
 import { siteVisitsRepository } from "../../db/repositories/site-visits.repository.js";
+import { projectsRepository } from "../../db/repositories/projects.repository.js";
 import { leadsRepository } from "../../db/repositories/leads.repository.js";
-import { ValidationError } from "../../shared/errors.js";
+import { NotFoundError, ValidationError } from "../../shared/errors.js";
+import type { RequestContext } from "../../auth/context.js";
+import { assertCan, leadScopeFor } from "../../auth/access.js";
+import { auditService } from "../audit/audit.service.js";
+import { usageService } from "../usage/usage.service.js";
 
 /**
  * Service boundary for site-visit scheduling. AI tools (check_visit_slots,
@@ -47,24 +52,58 @@ export const siteVisitsService = {
     });
   },
 
-  async bookSiteVisit(params: { leadId: string; projectId: string; isoDateTime: string }) {
+  async bookSiteVisit(ctx: RequestContext, params: { leadId: string; projectId: string; isoDateTime: string }) {
+    assertCan(ctx, "site-visits:manage");
+    const org = ctx.organizationId;
     const scheduledAt = new Date(params.isoDateTime);
     if (Number.isNaN(scheduledAt.getTime())) {
       throw new ValidationError(`Invalid slot date/time: ${params.isoDateTime}`);
     }
+    // The lead must belong to this organization (the composite foreign keys
+    // would also refuse a cross-organization row at the database level).
+    const lead = await leadsRepository.findById({ organizationId: org, id: params.leadId, scope: await leadScopeFor(ctx) });
+    if (!lead) throw new NotFoundError(`Lead ${params.leadId} not found`);
+    const project = await projectsRepository.findById({ organizationId: org, id: params.projectId });
+    if (!project) throw new NotFoundError(`Project ${params.projectId} not found`);
 
     const visit = await siteVisitsRepository.create({
+      organizationId: org,
       leadId: params.leadId,
       projectId: params.projectId,
       scheduledAt,
     });
-
-    await leadsRepository.updateStatus({ id: params.leadId, status: "VISIT_BOOKED" });
-
+    await leadsRepository.updateStatus({ organizationId: org, id: params.leadId, status: "VISIT_BOOKED" });
+    await auditService.record(ctx, {
+      action: "site_visit.booked",
+      entityType: "site_visit",
+      entityId: visit.id,
+      metadata: { leadId: params.leadId, projectId: params.projectId, scheduledAt },
+    });
+    await usageService.recordSiteVisit(ctx, visit);
     return visit;
   },
 
-  async listByLead(params: { leadId: string }) {
-    return siteVisitsRepository.listByLead({ leadId: params.leadId });
+  async listByLead(ctx: RequestContext, params: { leadId: string }) {
+    assertCan(ctx, "site-visits:read");
+    const lead = await leadsRepository.findById({ organizationId: ctx.organizationId, id: params.leadId, scope: await leadScopeFor(ctx) });
+    if (!lead) return [];
+    return siteVisitsRepository.listByLead({ organizationId: ctx.organizationId, leadId: params.leadId });
+  },
+
+  async list(ctx: RequestContext) {
+    assertCan(ctx, "site-visits:read");
+    const all = await siteVisitsRepository.list({ organizationId: ctx.organizationId });
+    const scope = await leadScopeFor(ctx);
+    if (scope.kind === "all") return all;
+    const visible = new Set((await leadsRepository.list({ organizationId: ctx.organizationId, scope })).map((l) => l.id));
+    return all.filter((v) => visible.has(v.leadId));
+  },
+
+  async getById(ctx: RequestContext, params: { id: string }) {
+    assertCan(ctx, "site-visits:read");
+    const visit = await siteVisitsRepository.findById({ organizationId: ctx.organizationId, id: params.id });
+    if (!visit) return null;
+    const lead = await leadsRepository.findById({ organizationId: ctx.organizationId, id: visit.leadId, scope: await leadScopeFor(ctx) });
+    return lead ? visit : null;
   },
 };

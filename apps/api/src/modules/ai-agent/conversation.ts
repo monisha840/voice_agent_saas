@@ -21,7 +21,8 @@ import type { ILanguageModel, ChatMessage } from "../../adapters/ai/llm.interfac
 import { getToolDefinitions, executeTool, END_CALL_TOOL_NAME } from "../../ai-tools/index.js";
 import type { ToolExecutionContext } from "../../ai-tools/index.js";
 import { conversationsRepository } from "../../db/repositories/conversations.repository.js";
-import { buildSystemPrompt } from "./persona.js";
+import { buildSystemPrompt, type PromptParams } from "./persona.js";
+import type { ResolvedAgentConfig } from "../agent-config/agent-config.types.js";
 import { logger } from "../../shared/logger.js";
 
 export interface ConversationTurnResult {
@@ -39,9 +40,11 @@ export class ConversationSession {
   constructor(
     private readonly llm: ILanguageModel,
     private readonly toolCtx: ToolExecutionContext,
-    params: { leadName: string; projectName: string },
+    params: PromptParams,
+    /** Optional per-organization/project agent configuration; absent = the built-in default agent. */
+    private readonly agent?: ResolvedAgentConfig,
   ) {
-    this.messages.push({ role: "system", content: buildSystemPrompt(params) });
+    this.messages.push({ role: "system", content: buildSystemPrompt(params, agent) });
   }
 
   /** Call once, before the first user utterance, to get the AI's opening line. */
@@ -60,8 +63,17 @@ export class ConversationSession {
     return this.runTurn();
   }
 
+  /**
+   * The explicit tool allow-list for this session. With an agent it is always a list (an empty one allows only
+   * end_call); only a session with no agent at all (a bare unit-test session) is unrestricted.
+   */
+  private allowedTools(): readonly string[] | undefined {
+    if (!this.agent) return undefined;
+    return this.agent.effectiveTools ?? (Array.isArray(this.agent.allowedTools) ? this.agent.allowedTools : []);
+  }
+
   private async runTurn(): Promise<ConversationTurnResult> {
-    const tools = getToolDefinitions();
+    const tools = getToolDefinitions(this.allowedTools());
     let shouldEndCall = false;
 
     for (let hop = 0; hop < MAX_TOOL_HOPS_PER_TURN; hop++) {
@@ -75,7 +87,7 @@ export class ConversationSession {
             shouldEndCall = true;
           }
 
-          const toolResult = await executeTool(call.name, call.arguments, this.toolCtx);
+          const toolResult = await executeTool(call.name, call.arguments, this.toolCtx, this.allowedTools());
 
           this.messages.push({
             role: "assistant",
@@ -109,6 +121,7 @@ export class ConversationSession {
   private async recordTurn(speaker: "ai" | "lead", text: string) {
     if (!text) return;
     await conversationsRepository.appendTurn({
+      organizationId: this.toolCtx.organizationId,
       callId: this.toolCtx.callId,
       turn: { speaker, text, timestamp: new Date().toISOString() },
     });

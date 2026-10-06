@@ -1,26 +1,55 @@
 /**
  * Minimal structured logger wrapper. Kept intentionally simple for the
  * MVP (no Sentry/metrics per scope) — just consistent, leak-safe
- * server-side logging. Never pass secrets (API keys, tokens) as fields;
- * callers are responsible for redacting before logging, and the
- * `redact` helper below is provided for that purpose.
+ * server-side logging. Fields are scrubbed defensively before printing:
+ * secret-looking keys are replaced at any depth, and secrets embedded in
+ * strings (?token=, Authorization/Bearer/Basic values, session cookies) are
+ * masked. Callers should still avoid passing secrets at all.
  */
 
 type LogFields = Record<string, unknown>;
+
+const SECRET_KEY = /pass(word)?|token|secret|hash|authorization|cookie|api[-_]?key|credential/i;
+const MAX_DEPTH = 6;
+
+/** Masks secrets that appear inside free text (URLs, header dumps, error messages). */
+export function scrubString(value: string): string {
+  return value
+    .replace(/([?&](?:token|access_token|api[-_]?key|password)=)[^&\s"']*/gi, "$1[redacted]")
+    .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/g, "$1 [redacted]")
+    .replace(/\b(va_session|session|sid)=[^;\s"']+/gi, "$1=[redacted]");
+}
+
+/** Deep copy with secret-keyed values replaced and strings scrubbed. Exported for tests. */
+export function scrubFields(value: unknown, depth = 0): unknown {
+  if (typeof value === "string") return scrubString(value);
+  if (value === null || typeof value !== "object") return value;
+  if (depth >= MAX_DEPTH) return "[truncated]";
+  if (Array.isArray(value)) return value.map((v) => scrubFields(v, depth + 1));
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    out[k] = SECRET_KEY.test(k) ? "[redacted]" : scrubFields(v, depth + 1);
+  }
+  return out;
+}
 
 function timestamp() {
   return new Date().toISOString();
 }
 
+function line(level: string, message: string, fields?: LogFields) {
+  return JSON.stringify({ level, time: timestamp(), message: scrubString(message), ...(scrubFields(fields ?? {}) as LogFields) });
+}
+
 export const logger = {
   info(message: string, fields?: LogFields) {
-    console.log(JSON.stringify({ level: "info", time: timestamp(), message, ...fields }));
+    console.log(line("info", message, fields));
   },
   warn(message: string, fields?: LogFields) {
-    console.warn(JSON.stringify({ level: "warn", time: timestamp(), message, ...fields }));
+    console.warn(line("warn", message, fields));
   },
   error(message: string, fields?: LogFields) {
-    console.error(JSON.stringify({ level: "error", time: timestamp(), message, ...fields }));
+    console.error(line("error", message, fields));
   },
 };
 

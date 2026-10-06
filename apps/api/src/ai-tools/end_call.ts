@@ -7,6 +7,8 @@ import type { AiTool } from "./types.js";
  * final response. Execution here just acknowledges the signal.
  */
 export const endCall: AiTool = {
+  module: "core",
+  requires: [],
   definition: {
     name: "end_call",
     description: "End the call gracefully. Use after the conversation has reached a natural conclusion (booking confirmed, lead not interested, or lead wants to end the call).",

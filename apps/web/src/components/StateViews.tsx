@@ -57,3 +57,16 @@ export function EmptyState({
     </div>
   );
 }
+
+/** Shown instead of a module's pages when the organization has that module switched off. */
+export function ModuleDisabled({ moduleName = "Sales", message }: { moduleName?: string; message?: string }) {
+  return (
+    <div className="rounded-lg border border-stone-200 bg-white p-6">
+      <div className="text-sm font-semibold text-stone-900">{moduleName} module is not enabled</div>
+      <p className="mt-1 text-sm text-stone-500">
+        {message ?? `This organization has not enabled the ${moduleName} module.`} An organization owner can turn it on
+        in Settings.
+      </p>
+    </div>
+  );
+}

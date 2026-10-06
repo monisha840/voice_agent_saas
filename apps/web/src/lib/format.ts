@@ -51,3 +51,13 @@ function formatRelativeTime(iso: string): string {
   const days = Math.round(hours / 24);
   return `${days}d ago`;
 }
+
+/** Who the call was with: lead name, else counterparty name, else number, else a placeholder. */
+export function counterpartyLabel(c: {
+  leadName?: string | null;
+  counterpartyName?: string | null;
+  counterpartyNumber?: string | null;
+  leadPhone?: string | null;
+}): string {
+  return c.leadName || c.counterpartyName || c.counterpartyNumber || c.leadPhone || "Unknown caller";
+}
