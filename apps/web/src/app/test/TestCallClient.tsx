@@ -8,8 +8,11 @@ import { Button, Card, Field, Notice, errorMessage, inputClass } from "@/compone
 import { CallExperience } from "@/components/CallExperience";
 import { CallStatusBadge } from "@/components/CallStatusBadge";
 import { EmptyState, LoadingState } from "@/components/StateViews";
+import { WebCallRun } from "./WebCallRun";
 
-type Target = "simulated" | "phone" | "lead";
+type Target = "simulated" | "phone" | "lead" | "web";
+// Temporary browser channel: hidden unless NEXT_PUBLIC_WEB_CALL_ENABLED=true (and the API has WEB_CALL_ENABLED=true).
+const WEB_CALL_ENABLED = process.env.NEXT_PUBLIC_WEB_CALL_ENABLED === "true";
 const POLL_MS = 2000;
 
 export function TestCallClient({ agents, leads, sales }: { agents: AgentOption[]; leads: Lead[]; sales: boolean }) {
@@ -43,6 +46,7 @@ export function TestCallClient({ agents, leads, sales }: { agents: AgentOption[]
           <Field label="Target">
             <select value={target} onChange={(e) => setTarget(e.target.value as Target)} className={inputClass}>
               <option value="simulated">Simulated call (no phone number)</option>
+              {WEB_CALL_ENABLED && <option value="web">Web call (your microphone)</option>}
               <option value="phone">Phone number</option>
               {sales && <option value="lead">Lead</option>}
             </select>
@@ -52,6 +56,8 @@ export function TestCallClient({ agents, leads, sales }: { agents: AgentOption[]
 
       {target === "lead" ? (
         <LeadTarget key={agentId} agentId={agentId} leads={leads} />
+      ) : target === "web" ? (
+        <WebCallRun key={agentId} agentId={agentId} />
       ) : (
         // Re-mount when the agent or target changes so a finished run never leaks across settings.
         <DirectRun key={`${agentId}:${target}`} agentId={agentId} withNumber={target === "phone"} />

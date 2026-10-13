@@ -32,6 +32,14 @@ export const bookSiteVisit: AiTool<Args> = {
     if (!leadId) return { error: "book_site_visit needs a lead on this call" };
     if (!projectId) return { error: "book_site_visit needs a project on this call" };
 
+    // The model may only book a slot that check_visit_slots currently offers; anything else is refused here, before
+    // any booking exists, so the call can neither claim nor record a visit at a time nobody offered.
+    const wanted = new Date(args.isoDateTime).getTime();
+    const offered = siteVisitsService.checkVisitSlots();
+    if (!offered.some((s) => new Date(s.isoDateTime).getTime() === wanted)) {
+      return { booked: false, error: "That time is not an available slot. Offer one of the available slots instead.", availableSlots: offered.map((s) => ({ label: s.label, isoDateTime: s.isoDateTime })) };
+    }
+
     const visit = await siteVisitsService.bookSiteVisit(toolContext(ctx), {
       leadId,
       projectId,

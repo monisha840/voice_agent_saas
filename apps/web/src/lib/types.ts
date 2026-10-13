@@ -267,10 +267,17 @@ export interface Agent {
   updatedAt: string;
 }
 
+/** A number an agent answers (inbound routing). */
+export interface AgentPhoneNumber {
+  id: string;
+  agentId: string;
+  phoneNumber: string;
+  label: string | null;
+  createdAt: string;
+}
+
 /** Fields accepted by POST/PATCH /api/agents. */
-export type AgentInput = Partial<
-  Omit<Agent, "id" | "status" | "isDefault" | "knowledge" | "createdAt" | "updatedAt" | "voice">
->;
+export type AgentInput = Partial<Omit<Agent, "id" | "status" | "isDefault" | "knowledge" | "createdAt" | "updatedAt">>;
 
 export interface ToolInfo {
   name: string;

@@ -25,6 +25,10 @@ export interface CallRuntime {
   toolContext: ToolExecutionContext;
   /** Language hint for STT/TTS; undefined lets the provider auto-detect (the default English agent). */
   languageCode: string | undefined;
+  /** The agent's configured TTS voice (a provider-specific speaker name); undefined = the provider's default voice. */
+  voice: string | undefined;
+  /** True when the agent answers in whatever language the caller is speaking (per turn); false = one fixed language. */
+  replyInCallerLanguage: boolean;
   /** The tools exposed to the model for this call. */
   effectiveTools: string[];
 }
@@ -90,6 +94,8 @@ export const callRuntime = {
       },
       // Legacy behaviour: an English agent (the default) leaves language detection to the speech provider.
       languageCode: agent.language === DEFAULT_LANGUAGE ? undefined : agent.language,
+      voice: agent.voice?.trim() ? agent.voice.trim() : undefined,
+      replyInCallerLanguage: behaviour.replyInCallerLanguage === true,
       effectiveTools,
     };
   },

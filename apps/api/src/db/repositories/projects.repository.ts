@@ -16,6 +16,19 @@ function scopeCondition(scope?: ProjectScope): SQL | undefined {
  * that narrows results to the projects a MANAGER/AGENT may see.
  */
 export const projectsRepository = {
+  /**
+   * SYSTEM lookup of one active project by id alone, for the single project named in configuration
+   * (EXOTEL_DEMO_PROJECT_ID). Not for request-driven ids: callers that act for a user use findById with their org.
+   */
+  async findActiveByIdSystem(params: { id: string }) {
+    const rows = await db
+      .select()
+      .from(projects)
+      .where(and(eq(projects.id, params.id), eq(projects.status, "active")))
+      .limit(1);
+    return rows[0] ?? null;
+  },
+
   async findById(params: { organizationId: string; id: string; scope?: ProjectScope }) {
     const rows = await db
       .select()

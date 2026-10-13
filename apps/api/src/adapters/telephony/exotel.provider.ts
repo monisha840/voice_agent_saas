@@ -1,7 +1,8 @@
 /**
  * Real Exotel telephony adapter.
  *
- * Places an outbound call with Exotel's "Connect Voice AI" API:
+ * Places an outbound call with Exotel's "Connect Voice AI" API (or, when EXOTEL_FLOW_APP_ID is set, into an App
+ * Bazaar flow with a Voicebot applet; see buildConnectRequest):
  *   POST https://{api_key}:{api_token}@{subdomain}/v1/Accounts/{account_sid}/Calls/connect
  *   (Basic auth sent as a header; subdomain is api.in.exotel.com for the
  *   India region or api.exotel.com for Singapore — shown on the dashboard's
@@ -97,11 +98,17 @@ export class ExotelProvider implements ITelephonyProvider {
     const body = new URLSearchParams({
       From: params.toNumber,
       CallerId: exotel.fromNumber,
-      StreamUrl: `${base.replace(/^https/i, "wss")}/api/telephony/exotel/media-stream?${qs}`,
-      StreamType: "bidirectional",
       StatusCallback: `${base}/api/telephony/exotel/status-callback?${qs}`,
       StatusCallbackContentType: "application/json",
     });
+    if (exotel.flowAppId) {
+      // Flow mode: the customer is connected to an App Bazaar flow (Greeting -> Voicebot applet). The Voicebot applet
+      // holds our wss:// URL, so none is sent here; the media stream finds this call by Exotel's call_sid.
+      body.set("Url", `${exotel.flowUrlBase}/${exotel.accountSid}/exoml/start_voice/${exotel.flowAppId}`);
+    } else {
+      body.set("StreamUrl", `${base.replace(/^https/i, "wss")}/api/telephony/exotel/media-stream?${qs}`);
+      body.set("StreamType", "bidirectional");
+    }
     body.append("StatusCallbackEvents[0]", "terminal");
     body.append("StatusCallbackEvents[1]", "answered");
     if (exotel.callType) body.set("CallType", exotel.callType);

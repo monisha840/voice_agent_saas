@@ -32,6 +32,7 @@ declare module "fastify" {
 /** Reachable without logging in. */
 const PUBLIC_PATHS = [
   /^\/health$/,
+  /^\/ready$/,
   /^\/api\/telephony\/exotel\//, // webhook-secret protected instead
   /^\/api\/auth\/(login|demo-login|config|accept-invite)$/,
 ];

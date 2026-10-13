@@ -52,6 +52,37 @@ export interface SimulatedCallOptions {
    * Set false to prove the server can resolve the call from start.call_sid alone.
    */
   passInternalCallIdInUrl?: boolean;
+  /**
+   * Barge-in scenario: instead of listening to the opening line, the caller starts the first scripted turn as soon as the
+   * first opening audio arrives (talking over the agent). Needs REALTIME_BARGE_IN=true on the server to have any effect.
+   */
+  interruptOpening?: boolean;
+  /**
+   * Real recordings (16-bit mono PCM at 8 kHz) played as the caller's turns, instead of scripted text. The mock STT
+   * cannot understand them, so this exercises turn detection, barge-in and the audio pipeline, not the conversation.
+   */
+  customerAudio?: readonly Buffer[];
+  /** Line impairments applied to the customer's audio (and to the silence between turns). */
+  impairments?: LineImpairments;
+}
+
+export interface LineImpairments {
+  /** Peak amplitude (0..32767) of uniform background noise added to every frame. */
+  noiseAmplitude?: number;
+  /** Drop every Nth media frame (packet loss). The frame is simply not sent. */
+  dropEveryNthFrame?: number;
+}
+
+/** Deterministic pseudo-random noise (same every run). */
+function addNoise(pcm: Buffer, amplitude: number, seed: number): Buffer {
+  const out = Buffer.from(pcm);
+  let x = (seed * 2654435761) >>> 0;
+  for (let i = 0; i + 1 < out.length; i += 2) {
+    x = (Math.imul(x, 1664525) + 1013904223) >>> 0;
+    const noise = Math.round(((x >>> 8) / 0x7fffff - 1) * amplitude);
+    out.writeInt16LE(Math.max(-32768, Math.min(32767, out.readInt16LE(i) + noise)), i);
+  }
+  return out;
 }
 
 export interface SimulationEvent {
@@ -75,11 +106,16 @@ export interface SimulationReport {
   aiAudioFrames: number;
   /** Anything the server sent that Exotel's protocol would reject. */
   protocolViolations: string[];
+  /** `clear` frames received (the server asking Exotel to flush buffered audio: barge-in). */
+  clearFrames: number;
+  /** Names of the marks received, in order. */
+  marks: string[];
 }
 
 export async function runSimulatedCall(opts: SimulatedCallOptions): Promise<SimulationReport> {
   const scenario = opts.scenario ?? "answered";
-  const turns = opts.customerTurns ?? DEFAULT_CUSTOMER_TURNS;
+  const audioTurns = opts.customerAudio;
+  const turns: readonly string[] = audioTurns ? audioTurns.map((_, i) => `[recording ${i + 1}]`) : (opts.customerTurns ?? DEFAULT_CUSTOMER_TURNS);
   const stepTimeoutMs = opts.stepTimeoutMs ?? 15_000;
   const cfg = getConfig();
   const secret = cfg.exotel.agentStreamWebhookSecret;
@@ -105,6 +141,7 @@ export async function runSimulatedCall(opts: SimulatedCallOptions): Promise<Simu
     record({ kind: "status_callback", detail: status });
   };
 
+  const live: { inbox?: FrameInbox } = {}; // the inbox does not exist for busy / no_answer scenarios
   const report = (): SimulationReport => ({
     scenario,
     providerCallId,
@@ -112,6 +149,8 @@ export async function runSimulatedCall(opts: SimulatedCallOptions): Promise<Simu
     customerTurnsSent: events.filter((e) => e.kind === "customer_turn").map((e) => e.detail ?? ""),
     aiAudioFrames: events.filter((e) => e.kind === "ai_audio").length,
     protocolViolations,
+    clearFrames: live.inbox?.clearFrames ?? 0,
+    marks: live.inbox?.marks ?? [],
   });
 
   await postStatus("ringing");
@@ -130,6 +169,7 @@ export async function runSimulatedCall(opts: SimulatedCallOptions): Promise<Simu
   const wsUrl = `${opts.baseUrl.replace(/^http/, "ws")}/api/telephony/exotel/media-stream${qs ? `?${qs}` : ""}`;
   const ws = new WebSocket(wsUrl);
   const inbox = new FrameInbox(ws, streamSid, stepTimeoutMs, protocolViolations);
+  live.inbox = inbox;
   await inbox.opened;
   record({ kind: "ws_connected" });
 
@@ -152,8 +192,11 @@ export async function runSimulatedCall(opts: SimulatedCallOptions): Promise<Simu
   record({ kind: "ws_start_sent" });
 
   let chunk = 0;
-  const sendPcmFrame = (pcm: Buffer) => {
+  const imp = opts.impairments;
+  const sendPcmFrame = (pcmIn: Buffer) => {
     chunk += 1;
+    if (imp?.dropEveryNthFrame && chunk % imp.dropEveryNthFrame === 0) return; // lost in transit
+    const pcm = imp?.noiseAmplitude ? addNoise(pcmIn, imp.noiseAmplitude, chunk) : pcmIn;
     sendEvent({
       event: "media",
       stream_sid: streamSid,
@@ -172,11 +215,12 @@ export async function runSimulatedCall(opts: SimulatedCallOptions): Promise<Simu
     return turn;
   };
 
-  await afterAi("opening");
-  for (const text of turns) {
+  if (opts.interruptOpening) await inbox.firstMedia; // talk over the greeting (it is never "played" to completion)
+  else await afterAi("opening");
+  for (const [turnIndex, text] of turns.entries()) {
     if (inbox.closed) break; // AI ended the call early
     record({ kind: "customer_turn", detail: text });
-    const speech = encodeMockSpeech(text);
+    const speech = audioTurns ? audioTurns[turnIndex] : encodeMockSpeech(text);
     for (let i = 0; i < speech.length; i += FRAME_BYTES) sendPcmFrame(speech.subarray(i, i + FRAME_BYTES));
     for (let i = 0; i < silenceFrames; i++) sendPcmFrame(Buffer.alloc(FRAME_BYTES)); // customer stops talking
     await afterAi("reply");
@@ -232,6 +276,10 @@ class FrameInbox {
   private turns: AiTurn[] = [];
   private waiters: Array<(t: AiTurn | null) => void> = [];
   private closeWaiters: Array<() => void> = [];
+  clearFrames = 0;
+  readonly marks: string[] = [];
+  readonly firstMedia: Promise<void>;
+  private firstMediaSeen!: () => void;
 
   constructor(
     ws: WebSocket,
@@ -239,6 +287,7 @@ class FrameInbox {
     private readonly timeoutMs: number,
     private readonly violations: string[],
   ) {
+    this.firstMedia = new Promise((r) => (this.firstMediaSeen = r));
     this.opened = new Promise((resolve, reject) => {
       ws.once("open", () => resolve());
       ws.once("error", reject);
@@ -259,7 +308,15 @@ class FrameInbox {
         }
         this.pendingChunks += 1;
         this.pendingBytes += bytes;
+        this.firstMediaSeen();
+      } else if (msg.event === "clear") {
+        // Exotel drops audio it has buffered: what arrived so far for the interrupted reply will never be played.
+        if (msg.stream_sid !== this.streamSid) this.violations.push("outbound clear frame missing/incorrect stream_sid");
+        this.clearFrames += 1;
+        this.pendingChunks = 0;
+        this.pendingBytes = 0;
       } else if (msg.event === "mark") {
+        this.marks.push(msg.mark?.name ?? "");
         if (msg.stream_sid !== this.streamSid) this.violations.push("outbound mark frame missing/incorrect stream_sid");
         const turn: AiTurn = {
           chunks: this.pendingChunks,

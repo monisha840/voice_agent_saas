@@ -15,3 +15,6 @@ coverage/
 
 # Postgres local data (must never be committed - reproducibility rule)
 infra/docker/pgdata/
+
+# STT benchmark audio fixtures (may contain real voices / PII; never commit)
+apps/api/bench-audio/

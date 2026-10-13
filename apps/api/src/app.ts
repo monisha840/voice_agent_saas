@@ -16,7 +16,12 @@ import { CONFIGURED_MODULES } from "./modules.config.js";
 import { syncModules } from "./modules/modules/module-runtime.js";
 import { registerModuleRoutes } from "./modules/modules/module-routes.js";
 import type { ModuleManifest } from "./modules/modules/module-contract.js";
+import { webCallRoutes } from "./modules/calls/web-call.routes.js";
+import { demoPropertyRoutes } from "./modules/projects/demo-property.routes.js";
 import { agentPhoneNumbersRoutes } from "./modules/agents/agent-phone-numbers.routes.js";
+import { inboundRoutes } from "./modules/calls/inbound.routes.js";
+import { databaseCheck, healthRoutes, type ReadinessCheck } from "./runtime/health.routes.js";
+import { resolveRequestId, runWithRequestId } from "./runtime/request-context.js";
 import { registerAuth } from "./auth/auth.plugin.js";
 import { logger } from "./shared/logger.js";
 import { getConfig } from "./config/env.js";
@@ -26,7 +31,9 @@ import { redactUrl, registerPublicAccessGuard } from "./security/telephony-auth.
 import {
   ConflictError,
   ForbiddenError,
+  LimitExceededError,
   NotFoundError,
+  ServiceUnavailableError,
   UnauthorizedError,
   ValidationError,
 } from "./shared/errors.js";
@@ -36,6 +43,8 @@ export async function buildApp(
     logStream?: NodeJS.WritableStream;
     /** Which optional modules to plug in (default: the deployment's CONFIGURED_MODULES). `[]` runs the bare Voice AI core. */
     modules?: readonly ModuleManifest[];
+    /** What /ready checks (default: the database). Tests substitute failing checks. */
+    readinessChecks?: ReadinessCheck[];
   } = {},
 ) {
   const cfg = getConfig();
@@ -45,6 +54,12 @@ export async function buildApp(
     trustProxy: cfg.trustProxy,
     // Exotel payloads and dashboard JSON are tiny; refuse anything larger with 413.
     bodyLimit: cfg.bodyLimitBytes,
+    // Every request gets an id: a sane incoming X-Request-Id is kept (so a proxy's id carries through), otherwise a
+    // fresh UUID. It is echoed in the X-Request-Id response header, stamped on every log line written while serving
+    // the request, and included in the body of 5xx errors so a user can quote it.
+    requestIdHeader: false,
+    genReqId: (req) => resolveRequestId(req.headers["x-request-id"]),
+    requestIdLogLabel: "requestId",
     logger: {
       stream: opts.logStream,
       // Defense in depth: never serialize credentials even if a header object is logged.
@@ -58,9 +73,15 @@ export async function buildApp(
     },
   });
 
+  // First hook of all: request id header + async context for the structured logger.
+  app.addHook("onRequest", (req, reply, done) => {
+    reply.header("x-request-id", req.id);
+    runWithRequestId(req.id, done);
+  });
+
   // Exotel's status-callback can post application/x-www-form-urlencoded.
   await app.register(formbody);
-  await app.register(websocket);
+  await app.register(websocket, { options: { maxPayload: getConfig().realtime.wsMaxPayloadBytes } });
   // Route-level limits (login) use the plugin; the generous per-IP default is our own hook, added
   // BEFORE the login gate so it also counts unauthenticated floods. Exotel/health are exempt. In-memory only.
   await app.register(rateLimit, routeRateLimitPluginOptions());
@@ -76,21 +97,33 @@ export async function buildApp(
   // Registered BEFORE the route plugins so every encapsulated route inherits it.
   app.setErrorHandler((err, req, reply) => {
     const status = errorStatus(err);
-    if (status >= 500) {
+    if (err instanceof ServiceUnavailableError) {
+      logger.warn("service unavailable", { requestId: req.id, error: err.message, method: req.method }); // expected, e.g. while draining
+    } else if (status >= 500) {
       // Full detail stays server-side; the client only ever sees a generic message.
-      logger.error("unhandled error", { error: err.message, stack: err.stack, method: req.method });
+      logger.error("unhandled error", { requestId: req.id, error: err.message, stack: err.stack, method: req.method });
     }
-    reply.status(status).send({ error: status >= 500 ? "Internal server error" : err.message });
+    if (err instanceof LimitExceededError && err.retryAfterSeconds) reply.header("retry-after", String(err.retryAfterSeconds));
+    // A server that is shutting down says so plainly (its message is safe and useful); other 5xx stay generic.
+    const showMessage = status < 500 || err instanceof ServiceUnavailableError;
+    const body: Record<string, unknown> = { error: showMessage ? err.message : "Internal server error" };
+    if (err instanceof LimitExceededError || err instanceof ServiceUnavailableError) body.code = err.code;
+    if (status >= 500) body.requestId = req.id;
+    reply.status(status).send(body);
   });
 
   // Optional modules (Sales, ...) plug in through their manifests: tools, call hooks, prompt templates, permissions,
   // data scopes. Idempotent; this app then serves exactly the modules listed.
   syncModules(opts.modules ?? CONFIGURED_MODULES);
 
-  app.get("/health", async () => ({ status: "ok" }));
+  // /health (liveness) and /ready (readiness: database up and not draining).
+  await app.register(healthRoutes, { checks: opts.readinessChecks ?? [databaseCheck()] });
 
   await app.register(authRoutes);
   await app.register(callsRoutes);
+  await app.register(inboundRoutes);
+  if (cfg.webCallEnabled) await app.register(webCallRoutes); // temporary browser channel, off unless WEB_CALL_ENABLED=true
+  await app.register(demoPropertyRoutes);
   await app.register(usersRoutes);
   await app.register(organizationsRoutes);
   await app.register(modulesRoutes);

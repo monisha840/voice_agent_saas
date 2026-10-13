@@ -14,6 +14,8 @@ const behaviour = z
     maxResponseSentences: z.number().int().min(1).max(6),
     endCallWhenDone: z.boolean(),
     conversationQuestions: z.array(z.string().trim().min(1).max(200)).max(3),
+    /** Answer in the language the caller is speaking now (per turn), instead of one fixed language for the whole call. */
+    replyInCallerLanguage: z.boolean(),
   })
   .partial()
   .strict();
@@ -45,8 +47,9 @@ const moduleConfig = z
   });
 
 /**
- * Fields of an agent. Strict: unknown keys are rejected, not ignored. `voice` is stored only
- * (null = provider default); it is NOT wired to any telephony/TTS provider yet.
+ * Fields of an agent. Strict: unknown keys are rejected, not ignored. `voice` is a free-form, provider-specific
+ * speaker name (null = the provider's default voice); the media-stream handler passes it to the TTS provider, and a
+ * voice the provider rejects falls back to the default voice (adapters/ai/tts-voice.ts).
  */
 const fields = {
   name: z.string().trim().min(1).max(120),

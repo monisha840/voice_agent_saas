@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "22"
+  PNPM_VERSION: "12.6.0"
+
+jobs:
+  api:
+    name: API (typecheck, lint, test, build)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: voice_agent_mvp
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # The test run creates, migrates and seeds its own `voice_agent_test` database on this server (never the main one).
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/voice_agent_mvp
+      AI_PROVIDER: mock
+      TELEPHONY_PROVIDER: mock
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @voice-agent/api typecheck
+      - run: pnpm --filter @voice-agent/api lint
+      - run: pnpm --filter @voice-agent/api test
+      - run: pnpm --filter @voice-agent/api build
+
+  web:
+    name: Web (typecheck, lint, build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @voice-agent/web typecheck
+      - run: pnpm --filter @voice-agent/web lint
+      - run: pnpm --filter @voice-agent/web build
+
+  docker:
+    name: Docker images build
+    runs-on: ubuntu-latest
+    needs: [api, web]
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -f infra/docker/api.Dockerfile -t voice-agent-api:ci .
+      - run: docker build -f infra/docker/web.Dockerfile -t voice-agent-web:ci .

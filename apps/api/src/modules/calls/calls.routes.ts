@@ -11,6 +11,7 @@ import { isTelephonyAuthorized } from "../../security/telephony-auth.js";
 import { requireContext } from "../../auth/auth.plugin.js";
 import { systemContext } from "../../auth/context.js";
 import { logger } from "../../shared/logger.js";
+import { lifecycle } from "../../runtime/lifecycle.js";
 
 const listQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
@@ -71,6 +72,9 @@ export async function callsRoutes(app: FastifyInstance) {
    * we apply the status change, reply immediately, and run the (slow,
    * LLM-backed) post-call finalization in the background. Finalization is
    * idempotent, so a retried callback cannot duplicate anything.
+   *
+   * Error handling is deliberate: a payload we cannot parse gets 200 (retrying cannot help), while an internal
+   * failure (database down) gets 500 so Exotel retries the callback instead of the status change being lost.
    */
   app.post("/api/telephony/exotel/status-callback", async (req, reply) => {
     if (!isTelephonyAuthorized(req)) {
@@ -78,32 +82,40 @@ export async function callsRoutes(app: FastifyInstance) {
       return reply.status(401).send({ error: "Unauthorized" });
     }
     const provider = getTelephonyProvider();
+
+    // A payload we cannot understand will never become understandable: answer 200 so the provider stops retrying it.
+    let parsed: ReturnType<typeof provider.parseStatusCallback>;
     try {
-      const parsed = provider.parseStatusCallback((req.body ?? {}) as Record<string, unknown>);
-      const { call, finalizeCallId } = await callsService.applyProviderStatus({
-        providerCallId: parsed.providerCallId,
-        status: parsed.status,
-        durationSeconds: parsed.durationSeconds,
-        recordingUrl: parsed.recordingUrl,
-      });
-      if (finalizeCallId && call) {
-        void callsService
-          .finalizeCall(systemContext(call.organizationId, "exotel-webhook"), { callId: finalizeCallId }).catch((err: unknown) => {
-          logger.error("calls.routes: post-call finalization failed", {
-            callId: finalizeCallId,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        });
-      }
-      return reply.status(200).send({ ok: true });
+      parsed = provider.parseStatusCallback((req.body ?? {}) as Record<string, unknown>);
     } catch (err) {
-      logger.error("calls.routes: failed to process status callback", {
+      logger.error("calls.routes: unusable status callback payload, not retrying", {
         error: err instanceof Error ? err.message : String(err),
       });
-      // 200 even on internal failure so the provider doesn't retry-storm us;
-      // the failure is logged server-side.
       return reply.status(200).send({ ok: false });
     }
+
+    // Anything else that fails (the database, a hook) is OUR transient problem: let it surface as a 500 so the
+    // provider retries. That is safe because applying a status is idempotent (atomic terminal transition, rank guard).
+    const { call, finalizeCallId } = await callsService.applyProviderStatus({
+      providerCallId: parsed.providerCallId,
+      status: parsed.status,
+      durationSeconds: parsed.durationSeconds,
+      recordingUrl: parsed.recordingUrl,
+    });
+    if (finalizeCallId && call) {
+      // Tracked so a graceful shutdown waits for the summary instead of dropping it.
+      lifecycle.trackTask(
+        callsService
+          .finalizeCall(systemContext(call.organizationId, "exotel-webhook"), { callId: finalizeCallId })
+          .catch((err: unknown) => {
+            logger.error("calls.routes: post-call finalization failed", {
+              callId: finalizeCallId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }),
+      );
+    }
+    return reply.status(200).send({ ok: true });
   });
 
   /**

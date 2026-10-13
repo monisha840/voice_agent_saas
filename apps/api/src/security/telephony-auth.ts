@@ -10,7 +10,7 @@
  * TELEPHONY_PROVIDER=mock (local development).
  *
  * Public-access guard: when a request arrives through a tunnel/proxy
- * (X-Forwarded-* present) or with a non-local Host header, only /health and
+ * (X-Forwarded-* present) or with a non-local Host header, only /health, /ready and
  * /api/telephony/exotel/* are served; the dashboard/lead/call/project APIs
  * return 404. Direct local access (127.0.0.1 / localhost) is unaffected.
  */
@@ -43,7 +43,7 @@ export function isTelephonyAuthorized(req: Pick<FastifyRequest, "headers" | "que
 }
 
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
-const PUBLIC_PATHS = [/^\/health$/, /^\/api\/telephony\/exotel\//];
+const PUBLIC_PATHS = [/^\/health$/, /^\/ready$/, /^\/api\/telephony\/exotel\//];
 
 function hostWithoutPort(hostHeader: string | undefined): string {
   if (!hostHeader) return "";
@@ -69,5 +69,5 @@ export function registerPublicAccessGuard(app: FastifyInstance): void {
 
 /** Removes the shared secret from a URL before it is logged. */
 export function redactUrl(url: string): string {
-  return url.replace(/([?&]token=)[^&]*/g, "$1[redacted]");
+  return url.replace(/([?&]token=)[^&]*/g, "$1[redacted]").replace(/(\/demo\/k\/)[^/?#]+/g, "$1[redacted]");
 }

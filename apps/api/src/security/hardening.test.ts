@@ -97,7 +97,8 @@ describe("uniform errors", () => {
     const res = await fetch(`${baseUrl}/api/boom`, { headers: { cookie } });
     const text = await res.text();
     expect(res.status).toBe(500);
-    expect(JSON.parse(text)).toEqual({ error: "Internal server error" });
+    // Generic message plus the request id (also in the X-Request-Id header and the server log) so it can be quoted.
+    expect(JSON.parse(text)).toEqual({ error: "Internal server error", requestId: res.headers.get("x-request-id") });
     expect(text).not.toMatch(/kaboom|hunter2|secret|\.ts|at .*\(/);
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
   });

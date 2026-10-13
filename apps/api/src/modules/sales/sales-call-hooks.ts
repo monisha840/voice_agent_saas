@@ -11,6 +11,7 @@ import { calls, leads } from "../../db/schema.js";
 import { agentsRepository } from "../../db/repositories/agents.repository.js";
 import { leadsRepository } from "../../db/repositories/leads.repository.js";
 import { organizationModulesRepository } from "../../db/repositories/organization-modules.repository.js";
+import { siteVisitsRepository } from "../../db/repositories/site-visits.repository.js";
 import { NotFoundError } from "../../shared/errors.js";
 import { isGenericSummary } from "../ai-agent/post-call-summary.js";
 import type { CallHooks, CallStatusEvent, CallSubject } from "../calls/call-hooks.js";
@@ -104,8 +105,16 @@ export const salesCallHooks: CallHooks = {
 
   async onFinalized(ctx, call, summary) {
     if (!call.leadId || isGenericSummary(summary)) return;
-    const status = (summary as { recommendedLeadStatus?: LeadStatus }).recommendedLeadStatus;
+    let status = (summary as { recommendedLeadStatus?: LeadStatus }).recommendedLeadStatus;
     if (!status) return;
+    if (status === "VISIT_BOOKED") {
+      // The summary is the model's opinion; VISIT_BOOKED is a fact only a booked visit of THIS lead, in the lead's own
+      // project, can establish. A visit that was merely offered (or refused) leaves the lead INTERESTED. A booking
+      // made on an earlier call still counts.
+      const lead = await leadsRepository.findById({ organizationId: ctx.organizationId, id: call.leadId });
+      const visits = await siteVisitsRepository.listByLead({ organizationId: ctx.organizationId, leadId: call.leadId });
+      if (!lead || !visits.some((v) => v.status === "booked" && v.projectId === lead.projectId)) status = "INTERESTED";
+    }
     await leadsRepository.updateStatus({ organizationId: ctx.organizationId, id: call.leadId, status });
   },
 

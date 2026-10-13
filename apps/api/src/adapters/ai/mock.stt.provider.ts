@@ -10,7 +10,8 @@
  *    header or preceded by pre-roll silence.
  *  - Any other audio returns a clearly-labeled canned transcript.
  */
-import type { ISpeechToText, SttResult } from "./stt.interface.js";
+import type { ISpeechToText, SttResult, SttStreamHandlers, SttStreamingSession, SttStreamOptions } from "./stt.interface.js";
+import { ProviderRequestError } from "../../shared/errors.js";
 
 const MOCK_SPEECH_MAGIC = Buffer.from("MOCKSPEECH1:", "utf8");
 /** The simulator sends 100 ms frames of 8 kHz 16-bit PCM = 1600 bytes. */
@@ -39,8 +40,86 @@ function decodeMockSpeech(audio: Buffer): string | null {
   return audio.toString("utf8", textStart, end < 0 ? audio.length : end).trim();
 }
 
+/**
+ * Deterministic streaming session: audio is collected between startUtterance() and endUtterance(); at the end it emits
+ * one partial (the first words) and then exactly one final, asynchronously, like a real provider. It honours the
+ * queue bound and cancel() so pipeline tests exercise the same lifecycle as the real adapter.
+ */
+class MockSttStreamingSession implements SttStreamingSession {
+  private chunks: Buffer[] = [];
+  private bytes = 0;
+  private isOpen = true;
+  private idx = 0;
+
+  constructor(
+    private readonly handlers: SttStreamHandlers,
+    private readonly opts: SttStreamOptions,
+  ) {}
+
+  get open() {
+    return this.isOpen;
+  }
+
+  sendAudio(pcm: Buffer): boolean {
+    if (!this.isOpen) return false;
+    this.bytes += pcm.length;
+    if (this.bytes > (this.opts.maxQueuedBytes ?? Infinity)) {
+      this.finish(new ProviderRequestError("mock-stt", "mock-stt stt.stream: audio queue limit reached", undefined, { category: "internal", operation: "stt.stream" }));
+      return false;
+    }
+    this.chunks.push(pcm);
+    return true;
+  }
+
+  startUtterance(): boolean {
+    if (!this.isOpen) return false;
+    this.chunks = [];
+    this.bytes = 0;
+    return true;
+  }
+
+  endUtterance(): boolean {
+    if (!this.isOpen) return false;
+    const audio = Buffer.concat(this.chunks);
+    this.chunks = [];
+    this.bytes = 0;
+    const text = decodeMockSpeech(audio) ?? "[mock transcription] Hi, I am interested in a 2 BHK.";
+    const utteranceIdx = this.idx++;
+    setImmediate(() => {
+      if (!this.isOpen) return;
+      const firstWords = text.split(/\s+/).slice(0, 2).join(" ");
+      this.handlers.onPartial({ text: firstWords, utteranceIdx, languageCode: "en-IN" });
+      this.handlers.onFinal({ text, utteranceIdx, languageCode: "en-IN" });
+    });
+    return true;
+  }
+
+  async close(): Promise<void> {
+    this.finish();
+  }
+
+  cancel(): void {
+    this.finish();
+  }
+
+  private finish(error?: ProviderRequestError) {
+    if (!this.isOpen) return;
+    this.isOpen = false;
+    this.chunks = [];
+    if (error) this.handlers.onError(error);
+    this.handlers.onClose();
+  }
+}
+
 export class MockSttProvider implements ISpeechToText {
   readonly name = "mock-stt";
+  readonly capabilities = { streamingStt: true };
+
+  async startStreaming(handlers: SttStreamHandlers, opts: SttStreamOptions): Promise<SttStreamingSession> {
+    const session = new MockSttStreamingSession(handlers, opts);
+    opts.signal?.addEventListener("abort", () => session.cancel(), { once: true });
+    return session;
+  }
 
   async transcribe(audio: Buffer): Promise<SttResult> {
     const scripted = decodeMockSpeech(audio);

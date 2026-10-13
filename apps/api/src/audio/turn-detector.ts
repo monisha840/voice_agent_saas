@@ -27,6 +27,31 @@ export interface TurnDetectorOptions {
   preRollMs: number;
 }
 
+export type VadEventKind =
+  /** Quiet, no utterance in progress. */
+  | "silence"
+  /** First loud frame of a new utterance. */
+  | "speech_start"
+  /** Another loud frame inside the utterance. */
+  | "speech"
+  /** A quiet frame inside the utterance (end of turn not yet reached). */
+  | "pause"
+  /** The utterance finished; `utterance` holds its PCM. */
+  | "speech_end"
+  /** The utterance finished but had too little voiced audio (noise); nothing to transcribe. */
+  | "discarded";
+
+export interface VadResult {
+  event: VadEventKind;
+  utterance?: Buffer;
+  /** Voiced audio so far in the current utterance (at the end event: the final total). */
+  speechMs: number;
+  /** Quiet audio since the last voiced frame. */
+  trailingSilenceMs: number;
+  /** speech_start only: the pre-roll plus the first voiced frame, i.e. everything the utterance holds so far. */
+  leadAudio?: Buffer;
+}
+
 export class TurnDetector {
   private preRoll: Array<{ frame: Buffer; ms: number }> = [];
   private preRollTotalMs = 0;
@@ -40,8 +65,19 @@ export class TurnDetector {
 
   /** Feed one inbound frame. Returns the finished utterance PCM, or null. */
   push(frame: Buffer): Buffer | null {
+    return this.process(frame).utterance ?? null;
+  }
+
+  /**
+   * Feed one inbound frame and report what it meant. This is the incremental view of the same state machine `push`
+   * uses: callers that need speech-start / pause / end events (turn control, barge-in) use this.
+   *
+   * Memory is bounded: an utterance is force-ended at maxUtteranceMs and pre-roll is capped at preRollMs.
+   */
+  process(frame: Buffer): VadResult {
     const ms = pcmDurationMs(frame.length, this.opts.sampleRate);
     const isSpeech = pcmRms(frame) >= this.opts.energyThreshold;
+    let started = false;
 
     if (!this.inUtterance) {
       if (!isSpeech) {
@@ -50,9 +86,10 @@ export class TurnDetector {
         while (this.preRollTotalMs > this.opts.preRollMs && this.preRoll.length > 0) {
           this.preRollTotalMs -= this.preRoll.shift()!.ms;
         }
-        return null;
+        return { event: "silence", speechMs: 0, trailingSilenceMs: 0 };
       }
       this.inUtterance = true;
+      started = true;
       this.chunks = this.preRoll.map((p) => p.frame);
       this.totalMs = this.preRollTotalMs;
       this.preRoll = [];
@@ -71,11 +108,28 @@ export class TurnDetector {
     }
 
     if (this.silenceMs >= this.opts.endSilenceMs || this.totalMs >= this.opts.maxUtteranceMs) {
-      const utterance = this.speechMs >= this.opts.minSpeechMs ? Buffer.concat(this.chunks) : null;
+      const speechMs = this.speechMs;
+      const trailingSilenceMs = this.silenceMs;
+      const utterance = speechMs >= this.opts.minSpeechMs ? Buffer.concat(this.chunks) : null;
       this.reset();
-      return utterance;
+      return utterance
+        ? { event: "speech_end", utterance, speechMs, trailingSilenceMs }
+        : { event: "discarded", speechMs, trailingSilenceMs };
     }
-    return null;
+    return {
+      event: started ? "speech_start" : isSpeech ? "speech" : "pause",
+      speechMs: this.speechMs,
+      trailingSilenceMs: this.silenceMs,
+      ...(started ? { leadAudio: Buffer.concat(this.chunks) } : {}),
+    };
+  }
+
+  /** Bytes currently buffered (utterance in progress, or pre-roll). For observability. */
+  get bufferedBytes(): number {
+    let n = 0;
+    for (const c of this.chunks) n += c.length;
+    for (const p of this.preRoll) n += p.frame.length;
+    return n;
   }
 
   /** True while the customer is mid-utterance. */

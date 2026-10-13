@@ -22,7 +22,7 @@ export class RateLimitError extends Error {
   }
 }
 
-const EXEMPT_PATHS = [/^\/health$/, /^\/api\/telephony\/exotel\//];
+const EXEMPT_PATHS = [/^\/health$/, /^\/ready$/, /^\/api\/telephony\/exotel\//];
 
 export function isRateLimitExempt(url: string): boolean {
   const path = url.split("?")[0];
@@ -55,6 +55,13 @@ class SlidingWindow {
 
 const ipHits = new SlidingWindow();
 const callHits = new SlidingWindow();
+const demoApiHits = new SlidingWindow();
+
+/** The demo property endpoint lives under the exempt Exotel prefix, so it carries its own per-IP limit. */
+export function enforceDemoApiRateLimit(ip: string, max = 60, windowMs = 60_000, now = Date.now()): void {
+  const retry = demoApiHits.hit(ip, max, windowMs, now);
+  if (retry !== null) throw new RateLimitError(`Too many requests. Try again in ${retry} seconds.`, retry);
+}
 
 /**
  * Global per-IP default for the whole API (generous). Registered as an
@@ -117,4 +124,5 @@ export async function callRateLimitPreHandler(req: FastifyRequest, reply: Fastif
 export function resetCallRateLimits(): void {
   ipHits.clear();
   callHits.clear();
+  demoApiHits.clear();
 }

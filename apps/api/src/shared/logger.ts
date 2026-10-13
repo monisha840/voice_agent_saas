@@ -7,6 +7,8 @@
  * masked. Callers should still avoid passing secrets at all.
  */
 
+import { currentRequestId } from "../runtime/request-context.js";
+
 type LogFields = Record<string, unknown>;
 
 const SECRET_KEY = /pass(word)?|token|secret|hash|authorization|cookie|api[-_]?key|credential/i;
@@ -38,7 +40,15 @@ function timestamp() {
 }
 
 function line(level: string, message: string, fields?: LogFields) {
-  return JSON.stringify({ level, time: timestamp(), message: scrubString(message), ...(scrubFields(fields ?? {}) as LogFields) });
+  const requestId = currentRequestId();
+  // Lines written while serving a request carry its id (runtime/request-context.ts), so one request can be followed.
+  return JSON.stringify({
+    level,
+    time: timestamp(),
+    message: scrubString(message),
+    ...(requestId ? { requestId } : {}),
+    ...(scrubFields(fields ?? {}) as LogFields),
+  });
 }
 
 export const logger = {

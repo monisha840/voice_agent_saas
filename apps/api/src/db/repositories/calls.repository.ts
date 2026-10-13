@@ -1,4 +1,4 @@
-import { and, eq, desc, inArray, isNull, lt, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, eq, desc, gte, inArray, isNull, lt, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { db } from "../client.js";
 import { agents, calls, conversations, type callStatusEnum, type callTypeEnum } from "../schema.js";
 
@@ -17,6 +17,35 @@ export type CallVisibilityCondition = SQL | undefined;
 export function ownCallsVisibility(params: { userId: string; includeUnassociated: boolean }): SQL {
   const own = eq(calls.initiatedByUserId, params.userId);
   return (params.includeUnassociated ? or(own, isNull(calls.leadId)) : own) as SQL;
+}
+
+/** A call that is still using a line: not yet over. */
+const ACTIVE_STATUSES: CallStatus[] = ["initiating", "ringing", "in_progress"];
+
+export interface NewCallParams {
+  organizationId: string;
+  agentId: string;
+  status: CallStatus;
+  callType?: CallType;
+  leadId?: string | null;
+  providerCallId?: string | null;
+  counterpartyNumber?: string | null;
+  counterpartyName?: string | null;
+  initiatedByUserId?: string | null;
+}
+
+function newCallValues(params: NewCallParams) {
+  return {
+    organizationId: params.organizationId,
+    agentId: params.agentId,
+    leadId: params.leadId ?? null,
+    callType: params.callType ?? "outbound",
+    status: params.status,
+    providerCallId: params.providerCallId ?? null,
+    counterpartyNumber: params.counterpartyNumber ?? null,
+    counterpartyName: params.counterpartyName ?? null,
+    initiatedByUserId: params.initiatedByUserId ?? null,
+  };
 }
 
 /**
@@ -117,32 +146,39 @@ export const callsRepository = {
       .orderBy(desc(calls.createdAt));
   },
 
-  async create(params: {
-    organizationId: string;
-    agentId: string;
-    status: CallStatus;
-    callType?: CallType;
-    leadId?: string | null;
-    providerCallId?: string | null;
-    counterpartyNumber?: string | null;
-    counterpartyName?: string | null;
-    initiatedByUserId?: string | null;
-  }) {
-    const rows = await db
-      .insert(calls)
-      .values({
-        organizationId: params.organizationId,
-        agentId: params.agentId,
-        leadId: params.leadId ?? null,
-        callType: params.callType ?? "outbound",
-        status: params.status,
-        providerCallId: params.providerCallId ?? null,
-        counterpartyNumber: params.counterpartyNumber ?? null,
-        counterpartyName: params.counterpartyName ?? null,
-        initiatedByUserId: params.initiatedByUserId ?? null,
-      })
-      .returning();
+  async create(params: NewCallParams) {
+    const rows = await db.insert(calls).values(newCallValues(params)).returning();
     return rows[0];
+  },
+
+  /**
+   * Creates a call only if the organization is under its limits, atomically: a per-organization advisory lock
+   * serializes the count-then-insert, so concurrent requests (even on different API instances) cannot both slip
+   * under a limit. A limit of 0 means unlimited. Returns which limit blocked it instead of inserting.
+   */
+  async createWithinLimits(
+    params: NewCallParams & { maxConcurrent: number; maxPerDay: number; now?: Date },
+  ): Promise<{ call: typeof calls.$inferSelect } | { blocked: "concurrent" | "daily"; limit: number }> {
+    const now = params.now ?? new Date();
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${params.organizationId}::text, 0))`);
+      if (params.maxConcurrent > 0) {
+        const [row] = await tx
+          .select({ n: sql<number>`count(*)::int` })
+          .from(calls)
+          .where(and(eq(calls.organizationId, params.organizationId), inArray(calls.status, ACTIVE_STATUSES)));
+        if (row.n >= params.maxConcurrent) return { blocked: "concurrent" as const, limit: params.maxConcurrent };
+      }
+      if (params.maxPerDay > 0) {
+        const [row] = await tx
+          .select({ n: sql<number>`count(*)::int` })
+          .from(calls)
+          .where(and(eq(calls.organizationId, params.organizationId), gte(calls.createdAt, new Date(now.getTime() - 24 * 3600_000))));
+        if (row.n >= params.maxPerDay) return { blocked: "daily" as const, limit: params.maxPerDay };
+      }
+      const rows = await tx.insert(calls).values(newCallValues(params)).returning();
+      return { call: rows[0] };
+    });
   },
 
   async setProviderCallId(params: { organizationId: string; id: string; providerCallId: string }) {

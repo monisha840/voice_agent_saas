@@ -16,7 +16,8 @@
  * ai-tools tests and conversation/e2e tests, which label results
  * accordingly.
  */
-import type { ChatMessage, ChatResult, ILanguageModel, ToolDefinition } from "./llm.interface.js";
+import type { ChatMessage, ChatResult, ILanguageModel, LlmStreamHandlers, ToolDefinition } from "./llm.interface.js";
+import type { ProviderCallOptions, ProviderCapabilities } from "./provider-common.js";
 
 const SUMMARY_TOOL_NAME = "emit_call_summary";
 /** Line placed in the generic-profile summary prompt (see post-call-summary.ts). */
@@ -29,8 +30,24 @@ interface Slot {
 
 export class MockLlmProvider implements ILanguageModel {
   readonly name = "mock-llm";
+  readonly capabilities: ProviderCapabilities = { toolCalling: true, parallelToolCalls: true, streamingLlm: true };
 
-  async chat(messages: ChatMessage[], tools: ToolDefinition[]): Promise<ChatResult> {
+  /**
+   * Deterministic streaming: the same answer chat() would give, delivered as word-sized deltas (each word carries its
+   * following space, like real token streams). A tool-call answer has no text deltas; the call is in the result.
+   */
+  async chatStream(messages: ChatMessage[], tools: ToolDefinition[], handlers: LlmStreamHandlers, opts?: ProviderCallOptions): Promise<ChatResult> {
+    const result = await this.chat(messages, tools, opts);
+    if (result.content) {
+      for (const piece of result.content.match(/\S+\s*/g) ?? []) {
+        if (opts?.signal?.aborted) throw opts.signal.reason ?? new DOMException("cancelled", "AbortError");
+        handlers.onTextDelta(piece);
+      }
+    }
+    return { ...result, finishReason: result.toolCalls ? "tool_calls" : "stop" };
+  }
+
+  async chat(messages: ChatMessage[], tools: ToolDefinition[], _opts?: ProviderCallOptions): Promise<ChatResult> {
     const hasTool = (toolName: string) => tools.some((t) => t.name === toolName);
 
     if (hasTool(SUMMARY_TOOL_NAME)) {
@@ -111,7 +128,10 @@ function offeredSlots(messages: ChatMessage[]): Slot[] {
 }
 
 function respondToToolResult(messages: ChatMessage[], toolMsg: ChatMessage): string {
-  const toolName = messages.find((m) => m.role === "assistant" && m.toolCallId === toolMsg.toolCallId)?.toolName;
+  // The tool call this result answers: declared on an assistant message's toolCalls (legacy: toolCallId/toolName).
+  const toolName =
+    messages.flatMap((m) => (m.role === "assistant" ? (m.toolCalls ?? []) : [])).find((c) => c.id === toolMsg.toolCallId)?.name ??
+    messages.find((m) => m.role === "assistant" && m.toolCallId === toolMsg.toolCallId)?.toolName;
   const result = parseJson(toolMsg.content);
   switch (toolName) {
     case "get_project_details":

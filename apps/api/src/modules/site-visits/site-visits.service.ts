@@ -22,18 +22,46 @@ export interface VisitSlot {
   isoDateTime: string;
 }
 
-function nextWeekday(from: Date, targetDay: number): Date {
-  const d = new Date(from);
-  const diff = (targetDay + 7 - d.getDay()) % 7 || 7;
-  d.setDate(d.getDate() + diff);
-  return d;
+/** The zone slot times are expressed in. Servers run in UTC; "10:00 AM" must mean 10:00 where the business is. */
+function businessTimeZone(): string {
+  return process.env.BUSINESS_TIME_ZONE?.trim() || "Asia/Kolkata";
+}
+
+/** Calendar date and weekday of an instant as seen in a time zone. */
+function zonedDate(at: Date, timeZone: string): { year: number; month: number; day: number; weekday: number } {
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(at);
+  const get = (type: string) => Number(parts.find((p) => p.type === type)!.value);
+  const year = get("year");
+  const month = get("month");
+  const day = get("day");
+  return { year, month, day, weekday: new Date(Date.UTC(year, month - 1, day)).getUTCDay() };
+}
+
+/** The instant at which the clock in `timeZone` shows this wall time on this date. */
+function zonedInstant(year: number, month: number, day: number, hour: number, minute: number, timeZone: string): Date {
+  const wallAsUtc = Date.UTC(year, month - 1, day, hour, minute);
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).formatToParts(new Date(wallAsUtc));
+  const get = (type: string) => Number(parts.find((p) => p.type === type)!.value);
+  const shown = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second"));
+  return new Date(wallAsUtc - (shown - wallAsUtc));
 }
 
 export const siteVisitsService = {
   /** Returns the next few demo slots (Saturday mornings/afternoons). */
-  checkVisitSlots(): VisitSlot[] {
-    const now = new Date();
-    const saturday = nextWeekday(now, 6);
+  checkVisitSlots(now: Date = new Date()): VisitSlot[] {
+    const zone = businessTimeZone();
+    const today = zonedDate(now, zone);
+    const daysToSaturday = (6 + 7 - today.weekday) % 7 || 7;
+    const saturday = new Date(Date.UTC(today.year, today.month - 1, today.day + daysToSaturday));
 
     const slotTimes = [
       { hour: 10, minute: 0, label: "10:00 AM" },
@@ -42,8 +70,7 @@ export const siteVisitsService = {
     ];
 
     return slotTimes.map((slot, idx) => {
-      const dt = new Date(saturday);
-      dt.setHours(slot.hour, slot.minute, 0, 0);
+      const dt = zonedInstant(saturday.getUTCFullYear(), saturday.getUTCMonth() + 1, saturday.getUTCDate(), slot.hour, slot.minute, zone);
       return {
         id: `slot-${idx + 1}`,
         label: `Saturday ${slot.label}`,

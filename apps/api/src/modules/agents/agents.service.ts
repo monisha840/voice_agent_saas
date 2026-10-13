@@ -42,7 +42,7 @@ export interface AgentJson {
   language: string;
   voice: string | null;
   tone: string;
-  behaviour: { maxResponseSentences: number; endCallWhenDone: boolean; conversationQuestions: string[] };
+  behaviour: { maxResponseSentences: number; endCallWhenDone: boolean; conversationQuestions: string[]; replyInCallerLanguage?: boolean };
   enabledTools: string[];
   /** Settings blocks of the modules plugged in, keyed by module (the core does not know their shape). */
   moduleConfig: Record<string, Record<string, unknown>>;
@@ -62,6 +62,8 @@ export function behaviourOf(row: Pick<AgentRow, "behaviour">) {
     maxResponseSentences: clampInt(b.maxResponseSentences, 1, 6, DEFAULT_BEHAVIOUR.maxResponseSentences),
     endCallWhenDone: typeof b.endCallWhenDone === "boolean" ? b.endCallWhenDone : DEFAULT_BEHAVIOUR.endCallWhenDone,
     conversationQuestions: questions.filter((q): q is string => typeof q === "string" && q.trim() !== "").slice(0, 3),
+    // Present only when switched on, so an agent that never set it reads exactly as before.
+    ...(b.replyInCallerLanguage === true ? { replyInCallerLanguage: true } : {}),
   };
 }
 

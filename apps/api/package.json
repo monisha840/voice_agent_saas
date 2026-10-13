@@ -14,7 +14,10 @@
     "db:migrate": "tsx src/db/migrate.ts",
     "db:seed": "tsx src/scripts/seed.ts",
     "org:create": "tsx src/scripts/create-org.ts",
-    "demo:call": "tsx src/scripts/demo-call.ts"
+    "exotel:flow-url": "tsx src/scripts/exotel-flow-url.ts",
+    "demo:call": "tsx src/scripts/demo-call.ts",
+    "load:test": "tsx src/scripts/load-test.ts",
+    "exotel:preflight": "tsx src/scripts/exotel-preflight.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^9.4.0",

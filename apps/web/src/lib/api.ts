@@ -1,5 +1,6 @@
 import type {
   Agent,
+  AgentPhoneNumber,
   AgentOption,
   AgentInput,
   CallDetail,
@@ -139,6 +140,9 @@ export function createApi(getExtraHeaders: HeaderProvider = () => ({})) {
         "/api/calls",
         input,
       ),
+    /** Browser web call: creates the call record; the audio then goes over the WebSocket at /api/web-call/stream. */
+    createWebCall: (input: { agentId?: string }) =>
+      send<{ callId: string; agentId: string; sampleRate: number }>("POST", "/api/calls/web", input),
     listSiteVisits: () => request<SiteVisitRow[]>("/api/site-visits"),
 
     // --- agents ---
@@ -156,6 +160,11 @@ export function createApi(getExtraHeaders: HeaderProvider = () => ({})) {
       send<Agent>("PUT", `/api/agents/${id}/knowledge`, {
         bindings: projectIds.map((sourceId) => ({ sourceType: "project", sourceId })),
       }),
+    listAgentPhoneNumbers: (id: string) => request<AgentPhoneNumber[]>(`/api/agents/${id}/phone-numbers`),
+    addAgentPhoneNumber: (id: string, input: { phoneNumber: string; label?: string | null }) =>
+      send<AgentPhoneNumber>("POST", `/api/agents/${id}/phone-numbers`, input),
+    removeAgentPhoneNumber: (id: string, numberId: string) =>
+      send<unknown>("DELETE", `/api/agents/${id}/phone-numbers/${numberId}`),
     listTools: () => request<ToolInfo[]>("/api/tools"),
     // The calls list returns top-level data + nextBefore, so it bypasses the data-unwrapping helper.
     listCalls: async (opts: {

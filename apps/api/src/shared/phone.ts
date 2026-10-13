@@ -28,3 +28,21 @@ export function normalizeIndianMobile(input: string): string {
   }
   return `+91${national}`;
 }
+
+/**
+ * Best-effort E.164 for a number a telephony provider reports as the DIALED number (an ExoPhone), which is often a
+ * landline or an international number, not just an Indian mobile. Accepts "+91 80 1234 5678", "08012345678",
+ * "918012345678", "0091...", "8012345678". Used only to look the number up in the inbound routing table, where the
+ * stored form is E.164 (see agents/agent-phone-numbers.service.ts). Throws ValidationError when it is not a number.
+ */
+export function normalizeDialedNumber(input: string): string {
+  const digits = input.trim().replace(/[\s\-().]/g, "");
+  if (!/^\+?\d{6,20}$/.test(digits)) throw new ValidationError(`"${input}" is not a phone number`);
+  if (digits.startsWith("+")) return digits;
+  if (digits.startsWith("0091")) return `+91${digits.slice(4)}`;
+  if (digits.startsWith("00")) return `+${digits.slice(2)}`;
+  if (digits.startsWith("0")) return `+91${digits.slice(1)}`; // national trunk prefix (India)
+  if (digits.length === 12 && digits.startsWith("91")) return `+${digits}`;
+  if (digits.length === 10) return `+91${digits}`;
+  return `+${digits}`;
+}

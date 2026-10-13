@@ -6,6 +6,7 @@ import { Lock, Plus, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Agent, AgentInput, Project, PromptTemplateKey, ToolInfo } from "@/lib/types";
 import { Badge, Button, Card, Field, Notice, errorMessage, inputClass } from "@/components/ui";
+import { PhoneNumbersCard } from "./PhoneNumbersCard";
 
 const LANGUAGES: [string, string][] = [
   ["en-IN", "English (India)"],
@@ -24,7 +25,7 @@ const TONES = ["professional", "friendly", "warm", "formal", "energetic"];
 const MAX_QUESTIONS = 3;
 const ALWAYS_ON = "end_call";
 
-type TabKey = "identity" | "prompt" | "voice" | "knowledge" | "tools" | "sales";
+type TabKey = "identity" | "prompt" | "voice" | "knowledge" | "tools" | "phone" | "sales";
 
 interface Form {
   name: string;
@@ -38,6 +39,8 @@ interface Form {
   greeting: string;
   disclosureText: string;
   language: string;
+  /** Optional provider voice/speaker name; empty = the provider default. */
+  voice: string;
   tone: string;
   maxResponseSentences: number;
   endCallWhenDone: boolean;
@@ -61,6 +64,7 @@ function toForm(a: Agent | null, tools: ToolInfo[] | null): Form {
     greeting: a?.greeting ?? "",
     disclosureText: a?.disclosureText ?? "",
     language: a?.language ?? "en-IN",
+    voice: a?.voice ?? "",
     tone: a?.tone ?? "professional",
     maxResponseSentences: a?.behaviour.maxResponseSentences ?? 3,
     endCallWhenDone: a?.behaviour.endCallWhenDone ?? true,
@@ -109,6 +113,8 @@ export function AgentEditor({
     ["voice", "Voice"],
     ["knowledge", "Knowledge"],
     ["tools", "Tools"],
+    // Inbound numbers belong to a saved agent, so the tab appears once the agent exists.
+    ...(agent ? ([["phone", "Phone numbers"]] as [TabKey, string][]) : []),
     ...(showSalesTab ? ([["sales", "Sales settings"]] as [TabKey, string][]) : []),
   ];
   const activeTab = tabs.some(([k]) => k === tab) ? tab : "identity";
@@ -126,6 +132,7 @@ export function AgentEditor({
       greeting: orNull(form.greeting),
       disclosureText: orNull(form.disclosureText),
       language: form.language,
+      voice: orNull(form.voice), // empty clears it: the provider default voice applies
       tone: form.tone,
       behaviour: {
         maxResponseSentences: form.maxResponseSentences,
@@ -425,12 +432,24 @@ export function AgentEditor({
         </div>
       )}
 
+      {activeTab === "phone" && agent && <PhoneNumbersCard agentId={agent.id} canManage={editable} />}
+
       {activeTab === "voice" && (
         <Card title="Voice">
-          <Field label="Voice">
-            <input disabled readOnly value={agent?.voice ?? ""} placeholder="Provider default" className={inputClass} />
+          <Field label="Voice" hint="Optional provider voice/speaker name. Example: shubh">
+            <input
+              disabled={!editable}
+              value={form.voice}
+              maxLength={80}
+              onChange={(e) => set("voice", e.target.value)}
+              placeholder="Provider default"
+              className={inputClass}
+            />
           </Field>
-          <p className="mt-2 text-xs text-stone-500">Provider default — voice selection is not enabled yet.</p>
+          <p className="mt-2 text-xs text-stone-500">
+            Leave empty to use the provider&apos;s default voice. If the provider does not recognise the name, the agent speaks with the
+            default voice instead.
+          </p>
         </Card>
       )}
 

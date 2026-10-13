@@ -11,7 +11,7 @@
  * behaviour); MOCK_CALL_SCENARIO=busy|no_answer to simulate unanswered calls.
  */
 import { getConfig } from "../../config/env.js";
-import { runSimulatedCall, type SimulatedCallOptions, type SimulationReport } from "../../simulator/call-simulator.js";
+import { runSimulatedCall, type LineImpairments, type SimulatedCallOptions, type SimulationReport } from "../../simulator/call-simulator.js";
 import { logger } from "../../shared/logger.js";
 import type {
   ITelephonyProvider,
@@ -28,6 +28,9 @@ export interface MockTelephonyOptions {
   customerTurns?: readonly string[];
   duplicateCompletedCallback?: boolean;
   passInternalCallIdInUrl?: boolean;
+  interruptOpening?: boolean;
+  customerAudio?: readonly Buffer[];
+  impairments?: LineImpairments;
 }
 
 export class MockTelephonyProvider implements ITelephonyProvider {
@@ -48,6 +51,9 @@ export class MockTelephonyProvider implements ITelephonyProvider {
         customerTurns: this.options.customerTurns,
         duplicateCompletedCallback: this.options.duplicateCompletedCallback,
         passInternalCallIdInUrl: this.options.passInternalCallIdInUrl,
+        interruptOpening: this.options.interruptOpening,
+        customerAudio: this.options.customerAudio,
+        impairments: this.options.impairments,
       }).catch((err: unknown) => {
         logger.error("mock-telephony: simulated call failed", {
           internalCallId: params.internalCallId,

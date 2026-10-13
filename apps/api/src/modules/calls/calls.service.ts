@@ -12,7 +12,8 @@ import { getPromptTemplate } from "../ai-agent/persona.js";
 import { logger } from "../../shared/logger.js";
 import { usageService } from "../usage/usage.service.js";
 import { NotFoundError, ValidationError } from "../../shared/errors.js";
-import { normalizeIndianMobile } from "../../shared/phone.js";
+import { normalizeDialedNumber, normalizeIndianMobile } from "../../shared/phone.js";
+import { callLimits } from "./call-limits.js";
 import { systemContext, type RequestContext } from "../../auth/context.js";
 import { assertCan } from "../../auth/access.js";
 import { auditService } from "../audit/audit.service.js";
@@ -136,7 +137,8 @@ export const callsService = {
       await callHooks.assertLeadCallable(ctx, params.leadId);
     }
     const agentId = await this.resolveAgentId(ctx, params);
-    const call = await callsRepository.create({
+    // Limit-checked and atomic (see call-limits.ts): throws, and creates nothing, when the organization is over a limit.
+    const call = await callLimits.createCall({
       organizationId: org,
       agentId,
       leadId: params.leadId ?? null,
@@ -214,27 +216,59 @@ export const callsService = {
 
   /**
    * SYSTEM (provider-agnostic inbound entry point): a call arrived on `dialedNumber` from `callerNumber`. The
-   * dialed number decides the agent; the Sales module (if on) may recognise the caller as an existing lead.
-   * An unknown number, or a number whose agent is archived, is refused and creates nothing.
+   * dialed number decides the agent AND the organization (never anything the caller or the provider payload says);
+   * the Sales module (if on) may recognise the caller as an existing lead.
+   * An unknown or unassigned number, or a number whose agent is archived, is refused and creates nothing.
+   * Idempotent on `providerCallId`: the provider's webhook and its media stream may both announce the same call, and a
+   * retried webhook must not create a second record. Subject to the organization's call limits.
    */
   async startInboundCall(params: { dialedNumber: string; callerNumber?: string | null; providerCallId?: string | null }) {
-    const route = await agentPhoneNumbersRepository.findByNumberAnyOrg({ phoneNumber: normalizeNumber(params.dialedNumber) });
+    if (params.providerCallId) {
+      const existing = await callsRepository.findByProviderCallIdAnyOrg({ providerCallId: params.providerCallId });
+      if (existing) return existing;
+    }
+
+    let dialed: string;
+    try {
+      dialed = normalizeDialedNumber(params.dialedNumber);
+    } catch {
+      throw new NotFoundError(`No agent answers ${params.dialedNumber}`);
+    }
+    const route = await agentPhoneNumbersRepository.findByNumberAnyOrg({ phoneNumber: dialed });
     if (!route) throw new NotFoundError(`No agent answers ${params.dialedNumber}`);
     const agent = await agentsRepository.findById({ organizationId: route.organizationId, id: route.agentId });
     if (!agent || agent.status !== "active") throw new NotFoundError(`No active agent answers ${params.dialedNumber}`);
 
     const ctx = systemContext(route.organizationId, "telephony-inbound");
-    const caller = params.callerNumber?.trim() ? normalizeNumber(params.callerNumber) : null;
+    let caller: string | null = null;
+    if (params.callerNumber?.trim()) {
+      try {
+        caller = normalizeNumber(params.callerNumber);
+      } catch {
+        caller = null; // an unparseable caller id (withheld, odd format) must not stop the call being answered
+      }
+    }
     const leadId = caller ? await callHooks.findLeadByPhone(ctx, caller) : null;
-    const call = await callsRepository.create({
-      organizationId: route.organizationId,
-      agentId: agent.id,
-      leadId,
-      callType: "inbound",
-      status: "ringing",
-      providerCallId: params.providerCallId ?? null,
-      counterpartyNumber: caller,
-    });
+
+    let call;
+    try {
+      call = await callLimits.createCall({
+        organizationId: route.organizationId,
+        agentId: agent.id,
+        leadId,
+        callType: "inbound",
+        status: "ringing",
+        providerCallId: params.providerCallId ?? null,
+        counterpartyNumber: caller,
+      });
+    } catch (err) {
+      // Lost a race with the other announcement of the same provider call: use the record that won.
+      if (params.providerCallId && (err as { code?: string }).code === "23505") {
+        const winner = await callsRepository.findByProviderCallIdAnyOrg({ providerCallId: params.providerCallId });
+        if (winner) return winner;
+      }
+      throw err;
+    }
     await conversationsRepository.createForCall({ organizationId: route.organizationId, callId: call.id });
     await auditService.record(ctx, {
       action: "call.received",
@@ -283,7 +317,19 @@ export const callsService = {
       });
       return { call: null };
     }
-    const ctx = systemContext(call.organizationId, "exotel-webhook");
+    return callsService.applyStatusToCall(call, params, "exotel-webhook");
+  },
+
+  /**
+   * The ONE status transition, shared by provider callbacks and the media stream. Never regresses a call, closes it
+   * atomically exactly once (a second terminal signal for the same call is a harmless duplicate), and tells modules.
+   */
+  async applyStatusToCall(
+    call: CallRow,
+    params: { status: ProviderCallStatus; recordingUrl?: string },
+    source: "exotel-webhook" | "media-stream",
+  ): Promise<{ call: CallRow | null; finalizeCallId?: string }> {
+    const ctx = systemContext(call.organizationId, source);
     const org = ctx.organizationId;
 
     const isTerminal = TERMINAL_PROVIDER_STATUSES.includes(params.status);
@@ -327,6 +373,32 @@ export const callsService = {
       await callHooks.onStatus(ctx, call, params.status === "busy" ? "busy" : params.status === "no_answer" ? "no_answer" : "failed");
     }
     return { call: updated, finalizeCallId };
+  },
+
+  /**
+   * SYSTEM (media stream): the audio stream connected, so the call was answered. Exotel's status callbacks are
+   * optional for calls that arrive through an ExoPhone flow, so the stream itself must move the call to in_progress.
+   * Idempotent; a callback that says the same later changes nothing.
+   */
+  async markAnsweredFromStream(params: { callId: string }) {
+    const call = await callsRepository.findByIdAnyOrg({ id: params.callId });
+    if (!call) return null;
+    return (await callsService.applyStatusToCall(call, { status: "in_progress" }, "media-stream")).call;
+  },
+
+  /**
+   * SYSTEM (media stream): the audio stream ended, so the call is over. Closes it and runs the post-call pipeline
+   * (summary, usage) even when no provider callback ever arrives. Uses the same atomic transition as a callback, so
+   * whichever signal comes second is a no-op and nothing is finalized twice.
+   */
+  async endFromStream(params: { callId: string; outcome: "completed" | "failed" }) {
+    const call = await callsRepository.findByIdAnyOrg({ id: params.callId });
+    if (!call) return null;
+    const { call: updated, finalizeCallId } = await callsService.applyStatusToCall(call, { status: params.outcome }, "media-stream");
+    if (finalizeCallId) {
+      await callsService.finalizeCall(systemContext(call.organizationId, "media-stream"), { callId: finalizeCallId });
+    }
+    return updated;
   },
 
   /** Applies a provider status and finalizes inline (used by tests and non-webhook callers). */
