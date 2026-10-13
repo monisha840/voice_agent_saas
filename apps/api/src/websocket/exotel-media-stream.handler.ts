@@ -42,6 +42,7 @@ import { callRuntime } from "../modules/calls/call-runtime.js";
 import { detectReplyLanguage, replyLanguageName } from "../modules/ai-agent/reply-language.js";
 import { reviewReply } from "../modules/ai-agent/reply-quality.js";
 import { collapseRepetition } from "../modules/ai-agent/stt-text.js";
+import { detectLanguageSwitchRequest, shouldIgnoreUtterance } from "../modules/ai-agent/caller-input.js";
 import { chunkPcmForExotel, pcm16ToWav, pcmDurationMs, ttsAudioToPcm } from "../audio/pcm.js";
 import { TurnDetector } from "../audio/turn-detector.js";
 import { getConfig } from "../config/env.js";
@@ -120,6 +121,8 @@ export function handleExotelMediaStream(socket: WebSocket, hints: MediaStreamHin
   let ttsLanguageCode: string | undefined;
   /** True when the agent answers in the language the caller is speaking (set per agent). */
   let replyInCallerLanguage = false;
+  /** A language the caller explicitly asked for ("speak in English"). Sticky for the rest of the call. */
+  let requestedLanguage: string | null = null;
   /** Aborted when the call ends, so an in-flight STT / LLM / TTS request stops instead of finishing for nobody. */
   const abort = new AbortController();
   let session: ConversationSession | null = null;
@@ -347,18 +350,40 @@ export function handleExotelMediaStream(socket: WebSocket, hints: MediaStreamHin
       turn.metrics.outcome = "empty";
       return;
     }
-    // An agent that mirrors the caller answers in the language they just used; a short or unclear utterance keeps the current one.
-    if (replyInCallerLanguage) {
+    // A cough, a breath or a click is transcribed as "um": it is not a caller turn. Only a short, filler-only sound is
+    // dropped; the agent is not interrupted by it (barge-in needs sustained speech), spoken to, or recorded.
+    const { speechStart, speechEnd } = turn.metrics.stamps;
+    const speechMs =
+      speechStart !== undefined && speechEnd !== undefined
+        ? speechEnd - speechStart
+        : Math.max(0, Math.round((pcm.length / 2 / sampleRate) * 1000) - turnCfg.endSilenceMs);
+    if (shouldIgnoreUtterance(text, speechMs)) {
+      logger.info("media-stream: ignored a short filler sound", { ...logCtx(), turnId: turn.turnId, speechMs });
+      turn.metrics.outcome = "empty";
+      return;
+    }
+    // An explicit request to change language wins over everything else, from this turn until another request.
+    const requested = detectLanguageSwitchRequest(text);
+    if (requested) {
+      requestedLanguage = requested;
+      ttsLanguageCode = requested;
+      logger.info("media-stream: caller asked for a language", { ...logCtx(), turnId: turn.turnId, requestedLanguage });
+    } else if (replyInCallerLanguage && !requestedLanguage) {
+      // An agent that mirrors the caller answers in the language they just used; a short or unclear utterance keeps the current one.
       const detected = detectReplyLanguage(text, heardLanguage);
       if (detected) ttsLanguageCode = detected;
       // Language codes only, never the words: lets a wrong switch be seen in the logs.
       logger.info("media-stream: reply language", { ...logCtx(), turnId: turn.turnId, heardLanguage: heardLanguage ?? null, detected, replyLanguage: ttsLanguageCode ?? null });
     }
-    const replyLanguage = replyInCallerLanguage ? replyLanguageName(ttsLanguageCode ?? "en-IN") : undefined;
+    const replyLanguage = requestedLanguage
+      ? replyLanguageName(requestedLanguage)
+      : replyInCallerLanguage
+        ? replyLanguageName(ttsLanguageCode ?? "en-IN")
+        : undefined;
     turn.metrics.mark("llmStart");
     let bookedThisTurn = false;
     const result = await converse(turn, (o) =>
-      session!.handleUserUtterance(text, { ...o, replyLanguage, onToolRun: (e) => (bookedThisTurn ||= e.booked) }),
+      session!.handleUserUtterance(text, { ...o, replyLanguage, languageRequested: requestedLanguage !== null, onToolRun: (e) => (bookedThisTurn ||= e.booked) }),
     );
     // Monitoring only: measure the reply and name known problems. Lengths and flags, never the words themselves.
     if (!turn.signal.aborted) {

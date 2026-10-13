@@ -290,7 +290,7 @@ export function getConfig(): AppConfig {
       ttsStreaming: (process.env.REALTIME_TTS_STREAMING ?? "false") === "true",
       sttMaxQueuedBytes: Math.max(3200, intEnv("REALTIME_STT_MAX_QUEUED_BYTES", 256 * 1024)),
       bargeInEnabled: (process.env.REALTIME_BARGE_IN ?? "false") === "true",
-      bargeInMinSpeechMs: Math.max(100, intEnv("REALTIME_BARGE_IN_MIN_SPEECH_MS", 300)),
+      bargeInMinSpeechMs: Math.max(100, intEnv("REALTIME_BARGE_IN_MIN_SPEECH_MS", 600)),
       maxPendingUtterances: Math.max(1, intEnv("REALTIME_MAX_PENDING_UTTERANCES", 2)),
       maxOutboundQueueBytes: Math.max(3200, intEnv("REALTIME_MAX_OUTBOUND_QUEUE_BYTES", 4 * 1024 * 1024)),
       outboundHighWaterBytes: Math.max(3200, intEnv("REALTIME_OUTBOUND_HIGH_WATER_BYTES", 256 * 1024)),

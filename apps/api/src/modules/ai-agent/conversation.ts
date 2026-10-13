@@ -26,6 +26,7 @@ import { buildSystemPrompt, type PromptParams } from "./persona.js";
 import type { ResolvedAgentConfig } from "../agent-config/agent-config.types.js";
 import { logger } from "../../shared/logger.js";
 import { getConfig } from "../../config/env.js";
+import { fallbackLine } from "./fallback-lines.js";
 
 export interface ConversationTurnResult {
   /** The spoken text to synthesize via TTS and play to the lead. */
@@ -75,6 +76,8 @@ export interface TurnOptions {
    * the hint is added to the request and never stored, so the history stays exactly what was said.
    */
   replyLanguage?: string;
+  /** True when the caller explicitly asked for that language: the hint then overrides every earlier language instruction. */
+  languageRequested?: boolean;
 }
 
 export interface ConversationSessionOptions {
@@ -278,10 +281,10 @@ export class ConversationSession {
   private messagesFor(opts?: TurnOptions): ChatMessage[] {
     const language = opts?.replyLanguage?.trim();
     if (!language) return this.messages;
-    return [
-      ...this.messages,
-      { role: "system", content: `The caller is speaking ${language}. Write your reply to the caller in ${language}.` },
-    ];
+    const content = opts?.languageRequested
+      ? `The caller has asked you to speak ${language}. This overrides every earlier instruction about language: write your reply to the caller in ${language} only, and keep doing so until they ask for another language.`
+      : `The caller is speaking ${language}. Write your reply to the caller in ${language}.`;
+    return [...this.messages, { role: "system", content }];
   }
 
   private async runTurn(opts?: TurnOptions): Promise<ConversationTurnResult> {
@@ -291,7 +294,8 @@ export class ConversationSession {
 
     for (let hop = 0; hop < MAX_TOOL_HOPS_PER_TURN; hop++) {
       if (signal?.aborted) throw new ConversationCancelledError();
-      const { result, chunks } = await this.requestModel(tools, hop, opts);
+      // After end_call has run the model must answer in words: offering tools again lets it loop on end_call.
+      const { result, chunks } = await this.requestModel(shouldEndCall ? [] : tools, hop, opts);
 
       if (result.toolCalls && result.toolCalls.length > 0) {
         const calls = this.normalizeToolCalls(result.toolCalls);
@@ -330,7 +334,7 @@ export class ConversationSession {
     }
 
     // Exceeded tool-hop budget — fail safe rather than looping forever.
-    const fallback = "Sorry, let me have a colleague follow up with you on that.";
+    const fallback = fallbackLine(opts?.replyLanguage ?? this.agent?.language);
     await this.recordTurn("ai", fallback);
     return { spokenText: fallback, shouldEndCall: true };
   }

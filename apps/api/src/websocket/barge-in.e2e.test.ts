@@ -16,6 +16,9 @@ process.env.REALTIME_STT_STREAMING = "true";
 process.env.REALTIME_LLM_STREAMING = "true";
 process.env.REALTIME_TTS_STREAMING = "true";
 process.env.REALTIME_BARGE_IN = "true";
+// This scenario uses a very short mock greeting, so the caller must be able to interrupt after 300 ms of speech. The
+// production default is 600 ms so that short noises (a cough, a click) do not cut the agent off.
+process.env.REALTIME_BARGE_IN_MIN_SPEECH_MS = "300";
 
 import { buildApp } from "../app.js";
 import { db } from "../db/client.js";
