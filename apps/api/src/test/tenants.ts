@@ -12,6 +12,7 @@ import {
   auditLogs,
   calls,
   conversations,
+  followUps,
   invitations,
   leads,
   memberships,
@@ -67,6 +68,7 @@ const ALL_TOOLS = [
   "book_site_visit",
   "update_lead",
   "mark_not_interested",
+  "request_follow_up",
   "end_call",
 ];
 
@@ -163,6 +165,7 @@ export async function cleanupTenants() {
     // Append-only / dependent tables first (audit and usage are restricted by FK, so they must go before the organization).
     await db.delete(usageEvents).where(inArray(usageEvents.organizationId, created.orgIds));
     await db.delete(auditLogs).where(inArray(auditLogs.organizationId, created.orgIds));
+    await db.delete(followUps).where(inArray(followUps.organizationId, created.orgIds));
     await db.delete(agentConfigs).where(inArray(agentConfigs.organizationId, created.orgIds));
     await db.delete(organizationModules).where(inArray(organizationModules.organizationId, created.orgIds));
     await db.delete(projectMembers).where(inArray(projectMembers.organizationId, created.orgIds));

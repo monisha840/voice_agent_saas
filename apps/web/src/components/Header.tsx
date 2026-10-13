@@ -60,6 +60,7 @@ export function Header() {
         { label: "Leads", href: "/leads", active: pathname.startsWith("/leads") },
         { label: "Projects", href: "/projects", active: pathname.startsWith("/projects") },
         { label: "Site Visits", href: "/site-visits", active: pathname.startsWith("/site-visits") },
+        { label: "Follow-ups", href: "/follow-ups", active: pathname.startsWith("/follow-ups") },
         { label: "Demo", href: "/demo", active: pathname === "/demo" },
       ]
     : [];

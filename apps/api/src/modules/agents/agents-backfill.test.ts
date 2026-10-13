@@ -9,6 +9,9 @@ import { agentConfigs, agentKnowledgeBindings, agents, calls } from "../../db/sc
 import { cleanupTenants, createTenant, type TestTenant } from "../../test/tenants.js";
 import { SALES_TOOL_NAMES } from "../sales/sales-constants.js";
 
+/** The list migration 0007 writes: every tool that existed then (request_follow_up came with migration 0010). */
+const LEGACY_SALES_TOOL_NAMES = SALES_TOOL_NAMES.filter((n) => n !== "request_follow_up");
+
 let T1: TestTenant; // org-default config with empty allowed_tools + a project override
 let T2: TestTenant; // no config at all
 let T3: TestTenant; // config whose allowed_tools lacks end_call
@@ -113,7 +116,7 @@ describe("migration 0007 backfill", () => {
       behaviour: { maxResponseSentences: 2, endCallWhenDone: false, conversationQuestions: ["When do you plan to buy?"] },
       moduleConfig: { sales: { offerSlots: 2, autoBook: false } },
     });
-    expect(def.enabledTools).toEqual([...SALES_TOOL_NAMES]);
+    expect(def.enabledTools).toEqual([...LEGACY_SALES_TOOL_NAMES]);
 
     const proj = rows1.find((r) => !r.isDefault)!;
     expect(proj).toMatchObject({
@@ -144,7 +147,7 @@ describe("migration 0007 backfill", () => {
       behaviour: { maxResponseSentences: 3, endCallWhenDone: true, conversationQuestions: [] },
       moduleConfig: { sales: { offerSlots: 3, autoBook: true } },
     });
-    expect(rows2[0].enabledTools).toEqual([...SALES_TOOL_NAMES]);
+    expect(rows2[0].enabledTools).toEqual([...LEGACY_SALES_TOOL_NAMES]);
     expect(await db.select().from(agentKnowledgeBindings).where(eq(agentKnowledgeBindings.organizationId, T2.orgId))).toHaveLength(0);
 
     // allowed_tools without end_call gets it appended

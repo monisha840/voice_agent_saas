@@ -86,10 +86,3 @@ export class CallGuard {
       .catch(() => undefined); // a failing callback must never become an unhandled rejection that takes the process down
   }
 }
-
-/** What the agent says before a guard ends the call. Plain English: these are operational lines, not agent persona. */
-export const GUARD_LINES = {
-  reprompt: "Are you still there?",
-  silenceEnd: "I'm not able to hear you, so I'll end the call now. Goodbye.",
-  maxDuration: "We've reached the maximum time for this call, so I'll end it here. Thank you, and goodbye.",
-} as const;

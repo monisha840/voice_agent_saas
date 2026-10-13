@@ -13,6 +13,7 @@ export const SALES_TOOL_NAMES: readonly string[] = [
   "book_site_visit",
   "update_lead",
   "mark_not_interested",
+  "request_follow_up",
   "end_call",
 ];
 

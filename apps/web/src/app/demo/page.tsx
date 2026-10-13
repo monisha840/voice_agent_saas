@@ -71,6 +71,7 @@ const AI_TOOLS = [
   { name: "book_site_visit", desc: "Books the chosen slot and updates lead status." },
   { name: "update_lead", desc: "Persists requirement/budget as understood from the call." },
   { name: "mark_not_interested", desc: "Marks the lead as not interested." },
+  { name: "request_follow_up", desc: "Notes for the team that a person was asked for, a callback, or a detail to send." },
   { name: "end_call", desc: "Signals the call should end gracefully." },
 ];
 

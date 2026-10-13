@@ -26,7 +26,8 @@ import { buildSystemPrompt, type PromptParams } from "./persona.js";
 import type { ResolvedAgentConfig } from "../agent-config/agent-config.types.js";
 import { logger } from "../../shared/logger.js";
 import { getConfig } from "../../config/env.js";
-import { fallbackLine } from "./fallback-lines.js";
+import { fallbackLine, fixedLine } from "./fallback-lines.js";
+import { QuestionLimiter } from "./one-question.js";
 
 export interface ConversationTurnResult {
   /** The spoken text to synthesize via TTS and play to the lead. */
@@ -91,6 +92,33 @@ export class ConversationCancelledError extends Error {
     super("The conversation turn was cancelled");
     this.name = "ConversationCancelledError";
   }
+}
+
+const QUESTION_SENTENCE = /[^.!?\n]*\?/g;
+const MAX_REMEMBERED_QUESTIONS = 6;
+
+/**
+ * A short reminder of what the agent has already said, so it does not ask or say the same thing again. Built from the
+ * history (nothing is stored), and only when there is something to remind of. Returns null before the agent has spoken.
+ */
+export function alreadySaidNote(messages: ChatMessage[]): string | null {
+  const replies = messages.filter((m) => m.role === "assistant" && (m.toolCalls?.length ?? 0) === 0 && m.content.trim() !== "");
+  if (replies.length === 0) return null;
+  const asked: string[] = [];
+  for (const r of replies) {
+    for (const q of r.content.match(QUESTION_SENTENCE) ?? []) {
+      const t = q.trim();
+      if (t.length >= 6 && !asked.includes(t)) asked.push(t);
+    }
+  }
+  const lines = [
+    `Do not repeat yourself. Your last reply was: "${replies[replies.length - 1].content.trim()}". Do not say it again word for word; if the caller asks you to repeat something, say it differently and more briefly.`,
+  ];
+  if (asked.length > 0) {
+    const list = asked.slice(-MAX_REMEMBERED_QUESTIONS).map((q, i) => `${i + 1}. ${q}`).join("\n");
+    lines.push(`Questions you have already asked (do not ask them again; use what the caller answered):\n${list}`);
+  }
+  return lines.join("\n");
 }
 
 const sameCall = (a: ToolCallRequest, b: ToolCallRequest) =>
@@ -220,11 +248,12 @@ export class ConversationSession {
     tools: ToolDefinition[],
     hop: number,
     opts?: TurnOptions,
+    toolChoice?: "none",
   ): Promise<{ result: ChatResult; chunks?: string[] }> {
     const signal = opts?.signal;
     const observer = opts?.observer;
-    const callOpts = { signal, callId: this.toolCtx.callId };
-    const messages = this.messagesFor(opts);
+    const callOpts = { signal, callId: this.toolCtx.callId, ...(toolChoice ? { toolChoice } : {}) };
+    const messages = this.messagesFor(opts, toolChoice === "none");
     observer?.onRequestStart?.(hop);
 
     if (!(this.options.streaming && this.llm.chatStream)) {
@@ -234,10 +263,14 @@ export class ConversationSession {
     }
 
     const chunker = new SentenceChunker();
+    const questions = new QuestionLimiter();
     const chunks: string[] = [];
     let sawToken = false;
-    const emit = (text: string) => {
+    const emit = (raw: string) => {
       if (signal?.aborted) return;
+      // One question per reply: later questions are never spoken.
+      const text = questions.filter(raw).text;
+      if (!text) return;
       if (chunks.length === 0) observer?.onFirstChunk?.(hop);
       chunks.push(text);
       try {
@@ -277,27 +310,59 @@ export class ConversationSession {
     return { result, chunks };
   }
 
-  /** The history as sent to the model: unchanged, plus a one-turn language hint when the caller's language is known. */
-  private messagesFor(opts?: TurnOptions): ChatMessage[] {
+  /**
+   * The history as sent to the model: unchanged, plus one-turn notes that are never stored (what the agent has already
+   * asked and said, and the caller's language when known).
+   */
+  private messagesFor(opts: TurnOptions | undefined, closing = false): ChatMessage[] {
+    const out: ChatMessage[] = [...this.messages];
+    const already = alreadySaidNote(this.messages);
+    if (already) {
+      // Just before the caller's latest words, so the history still ends exactly as it was said.
+      let at = out.length;
+      for (let i = out.length - 1; i >= 0; i--) {
+        if (out[i].role === "user") {
+          at = i;
+          break;
+        }
+      }
+      out.splice(at, 0, { role: "system", content: already });
+    }
     const language = opts?.replyLanguage?.trim();
-    if (!language) return this.messages;
-    const content = opts?.languageRequested
-      ? `The caller has asked you to speak ${language}. This overrides every earlier instruction about language: write your reply to the caller in ${language} only, and keep doing so until they ask for another language.`
-      : `The caller is speaking ${language}. Write your reply to the caller in ${language}.`;
-    return [...this.messages, { role: "system", content }];
+    if (language) {
+      const content = opts?.languageRequested
+        ? `The caller has asked you to speak ${language}. This overrides every earlier instruction about language: write your reply to the caller in ${language} only, and keep doing so until they ask for another language.`
+        : `The caller is speaking ${language}. Write your reply to the caller in ${language}.`;
+      out.push({ role: "system", content });
+    }
+    // Once end_call has run, a model that sees it in the history takes the conversation as finished and says nothing;
+    // it is told plainly that the reply is still wanted, and what it must contain.
+    if (closing) {
+      out.push({
+        role: "system",
+        content:
+          "The call is ending now. Reply to the caller in words: say what was just done for them (for example the day and time of a booked visit, or that a team member will call them) and a brief goodbye. Do not call any tool.",
+      });
+    }
+    return out;
   }
 
   private async runTurn(opts?: TurnOptions): Promise<ConversationTurnResult> {
     const tools = getToolDefinitions(this.allowedTools());
     let shouldEndCall = false;
+    /** Words the model put inside the end_call request itself (some models say goodbye there instead of in the reply). */
+    let endCallMessage: string | null = null;
     const signal = opts?.signal;
 
     for (let hop = 0; hop < MAX_TOOL_HOPS_PER_TURN; hop++) {
       if (signal?.aborted) throw new ConversationCancelledError();
-      // After end_call has run the model must answer in words: offering tools again lets it loop on end_call.
-      const { result, chunks } = await this.requestModel(shouldEndCall ? [] : tools, hop, opts);
+      // After end_call has run the model must answer in words: letting it call tools again lets it loop on end_call.
+      // The tools stay defined (providers refuse tool results in a request without tools); it is told to choose none.
+      const { result, chunks } = await this.requestModel(tools, hop, opts, shouldEndCall ? "none" : undefined);
 
-      if (result.toolCalls && result.toolCalls.length > 0) {
+      // A provider that ignored tool_choice "none" and asked for tools anyway: they are not run (the call is ending),
+      // and whatever words came with the request are the reply.
+      if (!shouldEndCall && result.toolCalls && result.toolCalls.length > 0) {
         const calls = this.normalizeToolCalls(result.toolCalls);
         // ONE assistant message carries every call of this response; each is answered by a tool message with its id.
         // It is recorded BEFORE anything runs, and every call gets an answer even if the turn is cancelled part-way, so
@@ -310,7 +375,11 @@ export class ConversationSession {
             toolResult = { error: "Not run: the call has ended." };
           } else {
             logger.info("ai-agent: tool call", { tool: call.name, toolCallId: call.id, callId: this.toolCtx.callId });
-            if (call.name === END_CALL_TOOL_NAME) shouldEndCall = true;
+            if (call.name === END_CALL_TOOL_NAME) {
+              shouldEndCall = true;
+              const said = (call.arguments as { message?: unknown } | null | undefined)?.message;
+              if (typeof said === "string" && said.trim()) endCallMessage = said.trim();
+            }
             toolResult = await this.runTool(call);
             const booked = typeof toolResult === "object" && toolResult !== null && (toolResult as { booked?: unknown }).booked === true;
             try {
@@ -326,7 +395,14 @@ export class ConversationSession {
         continue;
       }
 
-      const spokenText = result.content ?? "";
+      // One question per reply: the history holds what the caller heard, so later questions are removed here too.
+      // A call that is ending must not end in silence: if the model said no closing words, use the ones it put in
+      // end_call, else a short fixed goodbye in the call's language.
+      let reply = result.content ?? "";
+      if (shouldEndCall && !reply.trim()) reply = endCallMessage ?? fixedLine("goodbye", opts?.replyLanguage ?? this.agent?.language);
+      const limited = new QuestionLimiter().filter(reply);
+      if (limited.dropped) logger.info("ai-agent: extra questions dropped from the reply", { callId: this.toolCtx.callId });
+      const spokenText = limited.text;
       this.messages.push({ role: "assistant", content: spokenText });
       await this.recordTurn("ai", spokenText);
 

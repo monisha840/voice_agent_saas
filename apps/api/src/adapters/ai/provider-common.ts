@@ -12,6 +12,12 @@ export interface ProviderCallOptions {
   signal?: AbortSignal;
   /** The call this request belongs to. For logs only; never sent to the provider. */
   callId?: string;
+  /**
+   * LLM: "none" = the model must answer in words and may not call a tool, although the tools stay defined (a provider
+   * such as Sarvam refuses tool results in a request that defines no tools, and answers nothing when it has none).
+   * Absent = the model decides.
+   */
+  toolChoice?: "none";
 }
 
 /**

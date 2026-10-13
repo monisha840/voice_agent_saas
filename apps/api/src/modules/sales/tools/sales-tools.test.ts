@@ -21,7 +21,7 @@ describe("AI tools (executed against seeded DB, exercising the real service laye
     ctx = { organizationId: org.organizationId, subject: { leadId: lead.id, projectId: project.id }, callId: call.id };
   });
 
-  it("exposes exactly the 9 expected tool definitions", () => {
+  it("exposes exactly the 10 expected tool definitions", () => {
     const names = getToolDefinitions().map((t) => t.name);
     expect(names).toEqual([
       "get_project_details",
@@ -32,6 +32,7 @@ describe("AI tools (executed against seeded DB, exercising the real service laye
       "book_site_visit",
       "update_lead",
       "mark_not_interested",
+      "request_follow_up",
       "end_call",
     ]);
   });

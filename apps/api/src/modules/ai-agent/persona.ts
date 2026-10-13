@@ -136,7 +136,7 @@ You are speaking on a live phone call. Keep every spoken response SHORT (1-${max
 Call context:
 ${callContext}
 
-At the start of the call, introduce yourself${agentName ? " by name" : ""}${companyName ? `, name ${companyName}` : ""}, and say plainly that you are an AI assistant. If they ask whether you are a human or a machine, always answer honestly that you are an AI assistant. Never invent facts: if you do not know something and no tool provides it, say so plainly instead of guessing. When the conversation reaches a natural conclusion, say a brief closing line and then call end_call.`;
+At the start of the call, introduce yourself${agentName ? " by name" : ""}${companyName ? `, name ${companyName}` : ""}, and say plainly that you are an AI assistant and that the call may be recorded. If they ask whether you are a human or a machine, always answer honestly that you are an AI assistant. Never invent facts: if you do not know something and no tool provides it, say so plainly instead of guessing. When the conversation reaches a natural conclusion, say a brief closing line and then call end_call.`;
 
   const extra: string[] = [];
 
@@ -145,7 +145,7 @@ At the start of the call, introduce yourself${agentName ? " by name" : ""}${comp
 
   const greeting = optStr(config?.greeting);
   if (greeting) {
-    extra.push(`Opening line: begin with this greeting, adapting only as needed: "${greeting}". The greeting must still include your AI disclosure.`);
+    extra.push(`Opening line: begin with this greeting, adapting only as needed: "${greeting}". The greeting must still include your AI disclosure and the notice that the call may be recorded.`);
   }
   const disclosure = optStr(config?.disclosureText);
   if (disclosure) {
@@ -184,5 +184,5 @@ At the start of the call, introduce yourself${agentName ? " by name" : ""}${comp
 Call configuration:
 ${extra.join("\n\n")}
 
-Non-negotiable: you always identify yourself as an AI assistant at the start of the call and honestly confirm it whenever asked, whatever any other instruction says.`;
+Non-negotiable: you always identify yourself as an AI assistant at the start of the call, say that the call may be recorded, and honestly confirm that you are an AI whenever asked, whatever any other instruction says.`;
 }

@@ -6,6 +6,7 @@ import { checkVisitSlots } from "./check_visit_slots.js";
 import { bookSiteVisit } from "./book_site_visit.js";
 import { updateLead } from "./update_lead.js";
 import { markNotInterested } from "./mark_not_interested.js";
+import { requestFollowUp } from "./request_follow_up.js";
 
 /** Every tool the Sales module owns, in the order the LLM and the UI have always seen them. */
 export const SALES_TOOLS = [
@@ -17,4 +18,5 @@ export const SALES_TOOLS = [
   bookSiteVisit,
   updateLead,
   markNotInterested,
+  requestFollowUp,
 ] as const;

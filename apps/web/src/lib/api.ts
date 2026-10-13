@@ -14,6 +14,8 @@ import type {
   Call,
   CallListItem,
   CallStatus,
+  FollowUp,
+  FollowUpQueueItem,
   Invitation,
   KnowledgeCategory,
   Lead,
@@ -141,9 +143,12 @@ export function createApi(getExtraHeaders: HeaderProvider = () => ({})) {
         input,
       ),
     /** Browser web call: creates the call record; the audio then goes over the WebSocket at /api/web-call/stream. */
-    createWebCall: (input: { agentId?: string }) =>
+    createWebCall: (input: { agentId?: string; leadId?: string }) =>
       send<{ callId: string; agentId: string; sampleRate: number }>("POST", "/api/calls/web", input),
     listSiteVisits: () => request<SiteVisitRow[]>("/api/site-visits"),
+    /** Open follow-ups the agent noted for the team (human requested, callback, info requested, do not call). */
+    listFollowUps: () => request<FollowUpQueueItem[]>("/api/follow-ups"),
+    completeFollowUp: (id: string) => send<FollowUp>("POST", `/api/follow-ups/${id}/done`),
 
     // --- agents ---
     listAgents: (includeArchived = false) =>

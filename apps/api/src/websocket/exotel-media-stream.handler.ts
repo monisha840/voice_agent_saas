@@ -48,7 +48,8 @@ import { TurnDetector } from "../audio/turn-detector.js";
 import { getConfig } from "../config/env.js";
 import { logger } from "../shared/logger.js";
 import { lifecycle } from "../runtime/lifecycle.js";
-import { CallGuard, GUARD_LINES } from "./call-guard.js";
+import { CallGuard } from "./call-guard.js";
+import { fixedLine } from "../modules/ai-agent/fallback-lines.js";
 import { NotFoundError, ProviderRequestError } from "../shared/errors.js";
 import { DEFAULT_SAMPLE_RATE } from "../realtime/audio-format.js";
 import { OutboundAudioSender } from "../realtime/outbound-audio.js";
@@ -382,9 +383,22 @@ export function handleExotelMediaStream(socket: WebSocket, hints: MediaStreamHin
         : undefined;
     turn.metrics.mark("llmStart");
     let bookedThisTurn = false;
-    const result = await converse(turn, (o) =>
-      session!.handleUserUtterance(text, { ...o, replyLanguage, languageRequested: requestedLanguage !== null, onToolRun: (e) => (bookedThisTurn ||= e.booked) }),
-    );
+    let result: ConversationTurnResult;
+    try {
+      result = await converse(turn, (o) =>
+        session!.handleUserUtterance(text, { ...o, replyLanguage, languageRequested: requestedLanguage !== null, onToolRun: (e) => (bookedThisTurn ||= e.booked) }),
+      );
+    } catch (err) {
+      if (closed || abort.signal.aborted || turn.signal.aborted) throw err; // the call ended or the caller interrupted: expected
+      // The model could not answer (provider failure). The caller must not be met with silence: ask them to say it
+      // again, and keep the call going. The failure itself is still recorded on the turn and logged.
+      turn.metrics.outcome = "error";
+      turn.metrics.errorName = err instanceof Error ? err.name : "UnknownError";
+      if (err instanceof ProviderRequestError) turn.metrics.errorCategory = err.category;
+      logger.warn("turn: failed", { ...logCtx(), turnId: turn.turnId, errorName: turn.metrics.errorName, ...providerErrorFields(err) });
+      await speak(fixedLine("retry", ttsLanguageCode), turn);
+      return;
+    }
     // Monitoring only: measure the reply and name known problems. Lengths and flags, never the words themselves.
     if (!turn.signal.aborted) {
       const review = reviewReply({ text: result.spokenText, bookedThisTurn });
@@ -589,10 +603,10 @@ export function handleExotelMediaStream(socket: WebSocket, hints: MediaStreamHin
       maxReprompts: limits.silenceReprompts,
       onReprompt: async () => {
         if (closed || ending) return;
-        await turns.runAiTurn((turn) => speak(GUARD_LINES.reprompt, turn));
+        await turns.runAiTurn((turn) => speak(fixedLine("reprompt", ttsLanguageCode), turn));
       },
-      onSilenceEnd: () => endForGuard("silence_timeout", GUARD_LINES.silenceEnd),
-      onMaxDuration: () => endForGuard("max_duration", GUARD_LINES.maxDuration),
+      onSilenceEnd: () => endForGuard("silence_timeout", fixedLine("silenceEnd", ttsLanguageCode)),
+      onMaxDuration: () => endForGuard("max_duration", fixedLine("maxDuration", ttsLanguageCode)),
     });
     guard.start();
 

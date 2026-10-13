@@ -26,6 +26,7 @@ const SALES_TOOLS = [
   "book_site_visit",
   "update_lead",
   "mark_not_interested",
+  "request_follow_up",
   "end_call",
 ];
 

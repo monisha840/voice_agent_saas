@@ -23,11 +23,11 @@ afterAll(async () => {
 });
 
 function scripted(script: ChatResult[]) {
-  const requests: Array<{ messages: ChatMessage[]; tools: ToolDefinition[] }> = [];
+  const requests: Array<{ messages: ChatMessage[]; tools: ToolDefinition[]; toolChoice?: string }> = [];
   const llm: ILanguageModel = {
     name: "scripted",
-    async chat(messages, tools) {
-      requests.push({ messages: messages.map((m) => ({ ...m })), tools });
+    async chat(messages, tools, opts) {
+      requests.push({ messages: messages.map((m) => ({ ...m })), tools, toolChoice: opts?.toolChoice });
       return script.shift() ?? { content: "ok" };
     },
   };
@@ -50,7 +50,7 @@ describe("an explicit language request", () => {
 });
 
 describe("end_call", () => {
-  it("once it has run, the model is asked for words and offered no tools, so it cannot loop on end_call", async () => {
+  it("once it has run, the model is told to choose no tool, so it cannot loop on end_call", async () => {
     const { llm, requests } = scripted([
       { toolCalls: [{ id: "e1", name: "end_call", arguments: {} }] },
       { content: "Thank you, goodbye." },
@@ -59,7 +59,7 @@ describe("end_call", () => {
     const result = await session.handleUserUtterance("ok bye");
     expect(requests).toHaveLength(2);
     expect(requests[0].tools.map((t) => t.name)).toContain("end_call");
-    expect(requests[1].tools).toEqual([]);
+    expect(requests[1].toolChoice).toBe("none");
     expect(result).toMatchObject({ spokenText: "Thank you, goodbye.", shouldEndCall: true });
   });
 });

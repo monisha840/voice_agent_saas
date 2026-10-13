@@ -18,6 +18,8 @@ const POLL_MS = 2000;
 export function TestCallClient({ agents, leads, sales }: { agents: AgentOption[]; leads: Lead[]; sales: boolean }) {
   const [agentId, setAgentId] = useState(agents[0]?.id ?? "") // the API lists the default agent first;
   const [target, setTarget] = useState<Target>("simulated");
+  // Web call only: talk as one of the leads, so slots, bookings and follow-ups work as they do on a real call.
+  const [webLeadId, setWebLeadId] = useState("");
 
   if (agents.length === 0) {
     return (
@@ -51,13 +53,25 @@ export function TestCallClient({ agents, leads, sales }: { agents: AgentOption[]
               {sales && <option value="lead">Lead</option>}
             </select>
           </Field>
+          {target === "web" && sales && leads.length > 0 && (
+            <Field label="Talk as lead (optional)" hint="Without a lead the agent cannot check slots or book a visit." className="sm:col-span-2">
+              <select value={webLeadId} onChange={(e) => setWebLeadId(e.target.value)} className={inputClass}>
+                <option value="">No lead</option>
+                {leads.map((l) => (
+                  <option key={l.id} value={l.id}>
+                    {l.name} · {l.phone}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
         </div>
       </Card>
 
       {target === "lead" ? (
         <LeadTarget key={agentId} agentId={agentId} leads={leads} />
       ) : target === "web" ? (
-        <WebCallRun key={agentId} agentId={agentId} />
+        <WebCallRun key={`${agentId}:${webLeadId}`} agentId={agentId} leadId={webLeadId || undefined} />
       ) : (
         // Re-mount when the agent or target changes so a finished run never leaks across settings.
         <DirectRun key={`${agentId}:${target}`} agentId={agentId} withNumber={target === "phone"} />

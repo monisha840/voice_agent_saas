@@ -58,6 +58,24 @@ describe("detectLanguageSwitchRequest", () => {
     expect(detectLanguageSwitchRequest("हिंदी में बात करो")).toBe("hi-IN");
   });
 
+  it("asking to go back, as spoken in the second call", () => {
+    expect(detectLanguageSwitchRequest("Go back to Tamil language.")).toBe("ta-IN");
+    expect(detectLanguageSwitchRequest("I want you to speak in Tamil now")).toBe("ta-IN");
+    expect(detectLanguageSwitchRequest("please come back to English")).toBe("en-IN");
+    expect(detectLanguageSwitchRequest("english la pesunga")).toBe("en-IN");
+    expect(detectLanguageSwitchRequest("தமிழுக்கு மாறுங்க")).toBe("ta-IN");
+  });
+
+  it("a place name is not a language request", () => {
+    expect(detectLanguageSwitchRequest("Do you have flats in Tamil Nadu other than Chennai?")).toBeNull();
+    expect(detectLanguageSwitchRequest("I am from Tamil Nadu")).toBeNull();
+  });
+
+  it("a sentence that merely mentions a language is not a request", () => {
+    expect(detectLanguageSwitchRequest("Tell me the price, I only know a little English")).toBeNull();
+    expect(detectLanguageSwitchRequest("The brochure is in English")).toBe("en-IN"); // "in English" is a request; known, accepted
+  });
+
   it("ordinary sentences are not requests", () => {
     expect(detectLanguageSwitchRequest("What is the price of the 2 BHK?")).toBeNull();
     expect(detectLanguageSwitchRequest("My English is not very good but I understand")).toBeNull();

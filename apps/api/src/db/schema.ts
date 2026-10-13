@@ -283,6 +283,44 @@ export const siteVisits = pgTable(
   }),
 );
 
+/**
+ * Something a person on the team must do after a call: ring the lead back at a time they asked for, answer a question
+ * the agent could not, or get on the line because the lead asked for a human. Written by the agent during the call
+ * (the request_follow_up tool) and cleared by a team member. A lead's own status is never changed by it, except that a
+ * do_not_call request also sets the lead to DNC.
+ */
+export const followUps = pgTable(
+  "follow_ups",
+  {
+  id: uuid("id").defaultRandom().primaryKey(),
+  organizationId: uuid("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: "restrict" }),
+  /** The lead concerned; null for a call that had no lead (e.g. an unknown inbound caller). */
+  leadId: uuid("lead_id").references(() => leads.id, { onDelete: "cascade" }),
+  /** The call it came from; kept when the call is deleted. */
+  callId: uuid("call_id").references(() => calls.id, { onDelete: "set null" }),
+  /** human_requested | callback | info_requested | do_not_call (validated in the service). */
+  kind: varchar("kind", { length: 24 }).notNull(),
+  note: text("note"),
+  /** When the lead asked to be called, if they said. */
+  dueAt: timestamp("due_at", { withTimezone: true }),
+  /** open | done */
+  status: varchar("status", { length: 12 }).notNull().default("open"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+},
+  (t) => ({
+    leadFk: foreignKey({
+      name: "follow_ups_org_lead_fk",
+      columns: [t.organizationId, t.leadId],
+      foreignColumns: [leads.organizationId, leads.id],
+    }).onDelete("cascade"),
+    orgStatusIdx: index("follow_ups_org_status_idx").on(t.organizationId, t.status, t.createdAt),
+    leadIdx: index("follow_ups_lead_idx").on(t.leadId),
+  }),
+);
+
 // ---------------------------------------------------------------------------
 // Auth (Phase 1)
 // ---------------------------------------------------------------------------

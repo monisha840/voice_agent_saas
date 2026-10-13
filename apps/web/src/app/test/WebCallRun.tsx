@@ -57,7 +57,7 @@ function bytesFromB64(b64: string): Uint8Array {
 
 type Phase = "idle" | "connecting" | "live" | "ended";
 
-export function WebCallRun({ agentId }: { agentId: string }) {
+export function WebCallRun({ agentId, leadId }: { agentId: string; leadId?: string }) {
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
   const [callId, setCallId] = useState<string | null>(null);
@@ -114,7 +114,7 @@ export function WebCallRun({ agentId }: { agentId: string }) {
       await ctx.audioWorklet.addModule(workletUrl);
       URL.revokeObjectURL(workletUrl);
 
-      const created = await api.createWebCall({ agentId });
+      const created = await api.createWebCall({ agentId, ...(leadId ? { leadId } : {}) });
       setCallId(created.callId);
       poll(created.callId);
 

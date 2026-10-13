@@ -47,30 +47,34 @@ export function shouldIgnoreUtterance(text: string, speechMs: number): boolean {
 }
 
 const ENGLISH = "en-IN";
-const TAMIL = "ta-IN";
+const TAMIL_CODE = "ta-IN";
 const HINDI = "hi-IN";
 
+/** Words that introduce a request to change language. Kept narrow: a wrong switch is sticky for the rest of the call. */
+const ASK = "(?:speak|talk|reply|respond|answer|continue|switch|change|use|go back|come back|back|say it|explain it)";
+const GAP = "[^.?!]{0,30}";
+/** Ways to ask in Romanised Tamil ("tamil la pesunga"). */
+const ROMAN_TAIL = "\\s*(?:la|le|il)\\s*(?:pesu|pesunga|pesungal|sollunga|solunga|solluga)";
+
+/** Builds the patterns for one language name. `name` must not be the start of a longer name (see Tamil Nadu). */
+function latinPatterns(name: string): RegExp[] {
+  return [
+    new RegExp(`\\bin ${name}\\b`, "i"),
+    new RegExp(`\\b${ASK}\\b${GAP}\\b${name}\\b`, "i"),
+    new RegExp(`\\b${name}\\s+(?:please|pls|only|again)\\b`, "i"),
+    new RegExp(`\\b${name}${ROMAN_TAIL}`, "i"),
+  ];
+}
+
 const LATIN_REQUESTS: Array<{ code: string; patterns: RegExp[] }> = [
-  {
-    code: ENGLISH,
-    patterns: [/\bin english\b/i, /\b(speak|talk|reply|respond|answer|continue|switch|change)\b[^.?!]{0,40}\benglish\b/i, /\benglish\s+(please|pls|only)\b/i, /\bspeak\s+english\b/i],
-  },
-  {
-    code: TAMIL,
-    patterns: [
-      /\bin tamil\b/i,
-      /\b(speak|talk|reply|respond|answer|continue|switch|change)\b[^.?!]{0,40}\btamil\b/i,
-      /\btamil\s+(please|pls|only)\b/i,
-      /\bspeak\s+tamil\b/i,
-      /\btamil\s*(la|le|il)\s*(pesu|pesunga|pesungal|sollunga|solunga|solluga)/i,
-    ],
-  },
-  { code: HINDI, patterns: [/\bin hindi\b/i, /\b(speak|talk|reply|respond|answer|continue|switch|change)\b[^.?!]{0,40}\bhindi\b/i, /\bspeak\s+hindi\b/i] },
+  { code: ENGLISH, patterns: latinPatterns("english") },
+  { code: TAMIL_CODE, patterns: latinPatterns("tamil(?!\\s*nadu)") },
+  { code: HINDI, patterns: latinPatterns("hindi") },
 ];
 
 const NATIVE_REQUESTS: Array<{ code: string; pattern: RegExp }> = [
   { code: ENGLISH, pattern: /ஆங்கிலத்தில்|ஆங்கிலத்துல|இங்கிலீஷ்\s*(ல|இல்|ல்)|இங்கிலீஷ்|இங்கிலிஷ்|இங்லீஷ்|इंग्लिश में|अंग्रेज़ी में|अंग्रेजी में/u },
-  { code: TAMIL, pattern: /தமிழில்|தமிழ்ல|தமிழ்\s*ல்|தமிழ்\s*பேசு|तमिल में/u },
+  { code: TAMIL_CODE, pattern: /தமிழில்|தமிழ்ல|தமிழ்\s*ல்|தமிழ்\s*பேசு|தமிழுக்கு\s*மாறு|तमिल में/u },
   { code: HINDI, pattern: /हिंदी में|हिन्दी में|ஹிந்தியில்|ஹிந்தி\s*ல/u },
 ];
 

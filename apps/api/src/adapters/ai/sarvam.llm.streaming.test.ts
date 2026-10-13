@@ -126,6 +126,19 @@ describe("request shape", () => {
     for (const r of f.requests) expect(r.body.reasoning_effort).toBe(sent);
   });
 
+  it("sends tool_choice none when asked (streaming and batch), only while tools are defined, and otherwise never", async () => {
+    const f = await fake((res, req) => {
+      if (req.body.stream) (sse(res), res.end(text("a") + chunk({}, "stop") + done));
+      else (res.writeHead(200, { "Content-Type": "application/json" }), res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: "b" } }] })));
+    });
+    const p = new SarvamLlmProvider(f.url);
+    await p.chatStream(MSGS, TOOLS, collector().handlers, { toolChoice: "none" });
+    await p.chat(MSGS, TOOLS, { toolChoice: "none" });
+    await p.chatStream(MSGS, TOOLS, collector().handlers);
+    await p.chat(MSGS, [], { toolChoice: "none" });
+    expect(f.requests.map((r) => r.body.tool_choice)).toEqual(["none", "none", undefined, undefined]);
+  });
+
   it("omits tools when there are none, and refuses to run without a key", async () => {
     const f = await fake((res) => (sse(res), res.end(text("x") + chunk({}, "stop") + done)));
     await new SarvamLlmProvider(f.url).chatStream(MSGS, [], collector().handlers);

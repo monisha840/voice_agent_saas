@@ -9,7 +9,8 @@ import { handleExotelMediaStream } from "../../websocket/exotel-media-stream.han
 import { auditService } from "../audit/audit.service.js";
 import { callsService } from "./calls.service.js";
 
-const createBody = z.object({ agentId: z.string().uuid().optional() }).strict().optional();
+// leadId (optional): talk to the agent AS that lead, so lead tools (slots, booking, follow-ups on the lead) work as on a real call.
+const createBody = z.object({ agentId: z.string().uuid().optional(), leadId: z.string().uuid().optional() }).strict().optional();
 const streamQuery = z.object({ callId: z.string().uuid() });
 
 /** Calls whose stream was already claimed by a socket: a web call is single-use. */
@@ -31,12 +32,12 @@ export async function webCallRoutes(app: FastifyInstance) {
   app.post("/api/calls/web", { preHandler: callRateLimitPreHandler }, async (req, reply) => {
     const body = parseInput(createBody, req.body ?? undefined);
     const ctx = requireContext(req);
-    const call = await callsService.createCall(ctx, { agentId: body?.agentId, callType: "test" });
+    const call = await callsService.createCall(ctx, { agentId: body?.agentId, leadId: body?.leadId, callType: "test" });
     await auditService.record(ctx, {
       action: "call.initiated",
       entityType: "call",
       entityId: call.id,
-      metadata: { callId: call.id, agentId: call.agentId, callType: call.callType, provider: "browser" },
+      metadata: { callId: call.id, agentId: call.agentId, leadId: call.leadId, callType: call.callType, provider: "browser" },
     });
     return reply.status(201).send({ data: { callId: call.id, agentId: call.agentId, sampleRate: 8000 } });
   });

@@ -24,6 +24,7 @@ import { api } from "@/lib/api";
 import { can } from "@/lib/permissions";
 import { Button, errorMessage } from "@/components/ui";
 import { LeadFormModal } from "@/components/LeadForm";
+import { FollowUpList } from "@/components/FollowUpList";
 import type { LeadDetail, Project, Role, TeamMember } from "@/lib/types";
 
 export function LeadDetailClient({
@@ -88,7 +89,7 @@ export function LeadDetailClient({
             canAssign={false}
             onClose={() => setEditing(false)}
             onSaved={(saved) => {
-              setLead((prev) => ({ ...prev, ...saved, callHistory: prev.callHistory, siteVisits: prev.siteVisits, latestConversation: prev.latestConversation }));
+              setLead((prev) => ({ ...prev, ...saved, callHistory: prev.callHistory, siteVisits: prev.siteVisits, followUps: prev.followUps, latestConversation: prev.latestConversation }));
               setEditing(false);
               router.refresh();
             }}
@@ -202,6 +203,21 @@ export function LeadDetailClient({
                 <p className="text-sm text-stone-500">No site visit booked</p>
               )}
             </SectionShell>
+
+            {lead.followUps.length > 0 && (
+              <SectionShell title="Follow-ups" icon={Clock}>
+                <FollowUpList
+                  items={lead.followUps}
+                  canClear={can(role, "leads:update")}
+                  onCleared={(id) =>
+                    setLead((prev) => ({
+                      ...prev,
+                      followUps: prev.followUps.map((f) => (f.id === id ? { ...f, status: "done" as const, resolvedAt: new Date().toISOString() } : f)),
+                    }))
+                  }
+                />
+              </SectionShell>
+            )}
 
             {qualification?.recommendedNextAction && (
               <SectionShell title="Next Action" icon={Target}>

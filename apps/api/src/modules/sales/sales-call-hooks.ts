@@ -18,6 +18,7 @@ import type { CallHooks, CallStatusEvent, CallSubject } from "../calls/call-hook
 import { leadsService } from "../leads/leads.service.js";
 import { modulesService } from "../modules/modules.service.js";
 import { projectsService } from "../projects/projects.service.js";
+import { businessNowDescription } from "../site-visits/site-visits.service.js";
 
 const LEAD_STATUS_FOR_EVENT: Record<CallStatusEvent, "ANSWERED" | "BUSY" | "NO_ANSWER" | "RETRY"> = {
   answered: "ANSWERED",
@@ -52,6 +53,16 @@ export function salesCallVisibility(scope: LeadScope): SQL | null {
 
 type LeadStatus = Parameters<typeof leadsRepository.updateStatus>[0]["status"];
 
+const lakhs = (rupees: number) => `${Number((rupees / 100_000).toFixed(2))} lakhs`;
+
+/** The budget the CRM holds, in words the agent can use ("60 lakhs to 80 lakhs"); null when there is none. */
+export function describeBudget(min: number | null, max: number | null): string | null {
+  if (min != null && max != null) return min === max ? lakhs(min) : `${lakhs(min)} to ${lakhs(max)}`;
+  if (max != null) return `up to ${lakhs(max)}`;
+  if (min != null) return `from ${lakhs(min)}`;
+  return null;
+}
+
 export const salesCallHooks: CallHooks = {
   name: "sales",
 
@@ -81,7 +92,14 @@ export const salesCallHooks: CallHooks = {
         context: { leadId: lead.id, projectId: project.id },
         provides: ["lead", "project"],
         contactName: lead.name,
-        promptParams: { leadName: lead.name, projectName: project.name, contactName: lead.name },
+        promptParams: {
+          leadName: lead.name,
+          projectName: project.name,
+          contactName: lead.name,
+          leadRequirement: lead.requirementConfig,
+          leadBudget: describeBudget(lead.budgetMin, lead.budgetMax),
+          currentTime: businessNowDescription(),
+        },
       };
     }
     // No lead: if the Sales module is on and the agent is bound to a project, that project is the agent's knowledge.
@@ -91,7 +109,7 @@ export const salesCallHooks: CallHooks = {
     if (!projectBinding) return null;
     const project = await projectsService.getProjectWithKnowledge(ctx, { projectId: projectBinding.sourceId });
     if (!project) return null;
-    return { context: { projectId: project.id }, provides: ["project"], promptParams: { projectName: project.name } };
+    return { context: { projectId: project.id }, provides: ["project"], promptParams: { projectName: project.name, currentTime: businessNowDescription() } };
   },
 
   async onStatus(ctx, call, event) {
@@ -107,6 +125,9 @@ export const salesCallHooks: CallHooks = {
     if (!call.leadId || isGenericSummary(summary)) return;
     let status = (summary as { recommendedLeadStatus?: LeadStatus }).recommendedLeadStatus;
     if (!status) return;
+    // A lead who asked not to be called stays DNC, whatever the summary suggests.
+    const current = await leadsRepository.findById({ organizationId: ctx.organizationId, id: call.leadId });
+    if (current?.status === "DNC") return;
     if (status === "VISIT_BOOKED") {
       // The summary is the model's opinion; VISIT_BOOKED is a fact only a booked visit of THIS lead, in the lead's own
       // project, can establish. A visit that was merely offered (or refused) leaves the lead INTERESTED. A booking

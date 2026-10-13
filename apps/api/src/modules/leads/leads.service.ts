@@ -2,6 +2,7 @@ import { z } from "zod";
 import { leadsRepository } from "../../db/repositories/leads.repository.js";
 import { callsRepository } from "../../db/repositories/calls.repository.js";
 import { siteVisitsRepository } from "../../db/repositories/site-visits.repository.js";
+import { followUpsRepository } from "../../db/repositories/follow-ups.repository.js";
 import { conversationsRepository } from "../../db/repositories/conversations.repository.js";
 import { projectsRepository } from "../../db/repositories/projects.repository.js";
 import { membershipsRepository } from "../../db/repositories/memberships.repository.js";
@@ -191,9 +192,10 @@ export const leadsService = {
     const org = ctx.organizationId;
     const lead = await leadsRepository.findById({ organizationId: org, id: params.leadId, scope: await leadScopeFor(ctx) });
     if (!lead) return null;
-    const [callHistory, siteVisits] = await Promise.all([
+    const [callHistory, siteVisits, followUps] = await Promise.all([
       callsRepository.listByLead({ organizationId: org, leadId: params.leadId }),
       siteVisitsRepository.listByLead({ organizationId: org, leadId: params.leadId }),
+      followUpsRepository.listByLead({ organizationId: org, leadId: params.leadId }),
     ]);
     // Attach the conversation (transcript/summary/qualification) for the
     // most recent call, if any, so the dashboard's lead detail screen can
@@ -202,7 +204,7 @@ export const leadsService = {
     const conversation = latestCall
       ? await conversationsRepository.findByCallId({ organizationId: org, callId: latestCall.id })
       : null;
-    return { ...lead, callHistory, siteVisits, latestConversation: conversation };
+    return { ...lead, callHistory, siteVisits, followUps, latestConversation: conversation };
   },
 
   async getLeadOrThrow(ctx: RequestContext, params: { leadId: string }) {

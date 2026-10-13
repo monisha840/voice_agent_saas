@@ -27,6 +27,22 @@ function businessTimeZone(): string {
   return process.env.BUSINESS_TIME_ZONE?.trim() || "Asia/Kolkata";
 }
 
+/** The current date and time where the business is, in words ("Tuesday, 13 October 2026, 6:35 pm"), for the agent's prompt. */
+export function businessNowDescription(now: Date = new Date()): string {
+  const timeZone = businessTimeZone();
+  const text = new Intl.DateTimeFormat("en-IN", {
+    timeZone,
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }).format(now);
+  return `${text} (${timeZone})`;
+}
+
 /** Calendar date and weekday of an instant as seen in a time zone. */
 function zonedDate(at: Date, timeZone: string): { year: number; month: number; day: number; weekday: number } {
   const parts = new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(at);

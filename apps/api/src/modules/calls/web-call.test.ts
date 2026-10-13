@@ -151,6 +151,24 @@ describe("browser web call", () => {
     await first.closed;
   });
 
+  it("can be started as one of the organization's leads, and refuses a lead it cannot see", async () => {
+    const res = await fetch(`${baseUrl}/api/calls/web`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ leadId: A.leadId }),
+    });
+    expect(res.status).toBe(201);
+    const callId = ((await res.json()) as { data: { callId: string } }).data.callId;
+    expect((await getCallRow(callId)).leadId).toBe(A.leadId);
+
+    const missing = await fetch(`${baseUrl}/api/calls/web`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ leadId: "00000000-0000-4000-8000-000000000000" }),
+    });
+    expect(missing.status).toBe(404);
+  });
+
   it("refuses an unknown call id", async () => {
     const b = openBrowser("00000000-0000-4000-8000-000000000000");
     await b.opened;

@@ -47,7 +47,7 @@ export class SarvamLlmProvider implements ILanguageModel {
   /** `url` is a test seam (a local protocol server); production uses Sarvam's endpoint. */
   constructor(private readonly url: string = SARVAM_CHAT_URL) {}
 
-  private request(messages: ChatMessage[], tools: ToolDefinition[], stream: boolean) {
+  private request(messages: ChatMessage[], tools: ToolDefinition[], stream: boolean, toolChoice?: "none") {
     const { sarvam } = getConfig();
     if (!sarvam.apiKey) {
       throw new ProviderConfigError(
@@ -60,6 +60,7 @@ export class SarvamLlmProvider implements ILanguageModel {
       model: sarvam.llmModel,
       messages: messages.map(toOpenAiMessage),
       tools: tools.length > 0 ? tools.map(toOpenAiTool) : undefined,
+      ...(toolChoice && tools.length > 0 ? { tool_choice: toolChoice } : {}),
       ...(stream ? { stream: true } : {}),
       // "" = not sent (API default); "off" = null (disables thinking); anything else passes through.
       ...(effort === "" ? {} : { reasoning_effort: effort === "off" ? null : effort }),
@@ -76,7 +77,7 @@ export class SarvamLlmProvider implements ILanguageModel {
   }
 
   async chat(messages: ChatMessage[], tools: ToolDefinition[], opts?: ProviderCallOptions): Promise<ChatResult> {
-    const { body, headers } = this.request(messages, tools, false);
+    const { body, headers } = this.request(messages, tools, false, opts?.toolChoice);
 
     let response: Response;
     try {
@@ -103,7 +104,7 @@ export class SarvamLlmProvider implements ILanguageModel {
    * anything was delivered). Everything is released on every exit: the timers, the abort link and the connection.
    */
   async chatStream(messages: ChatMessage[], tools: ToolDefinition[], handlers: LlmStreamHandlers, opts?: ProviderCallOptions): Promise<ChatResult> {
-    const { body, headers } = this.request(messages, tools, true);
+    const { body, headers } = this.request(messages, tools, true, opts?.toolChoice);
     const { providers } = getConfig();
 
     const ac = new AbortController();

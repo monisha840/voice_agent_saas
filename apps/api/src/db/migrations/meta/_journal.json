@@ -71,6 +71,13 @@
       "when": 1791265211568,
       "tag": "0009_next_eddie_brock",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1791892520196,
+      "tag": "0010_regular_sleepwalker",
+      "breakpoints": true
     }
   ]
 }

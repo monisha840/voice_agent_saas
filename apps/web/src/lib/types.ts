@@ -119,9 +119,33 @@ export interface SiteVisit {
   createdAt: string;
 }
 
+export type FollowUpKind = "human_requested" | "callback" | "info_requested" | "do_not_call";
+
+/** Something the team must do after a call, noted by the agent (a human was asked for, a callback, a question to answer). */
+export interface FollowUp {
+  id: string;
+  leadId: string | null;
+  callId: string | null;
+  kind: FollowUpKind;
+  note: string | null;
+  dueAt: string | null;
+  status: "open" | "done";
+  createdAt: string;
+  resolvedAt: string | null;
+}
+
+/** An open follow-up in the team's queue, with who to ring. */
+export interface FollowUpQueueItem extends Omit<FollowUp, "resolvedAt"> {
+  leadName: string | null;
+  leadPhone: string | null;
+  callerName: string | null;
+  callerPhone: string | null;
+}
+
 export interface LeadDetail extends Lead {
   callHistory: Call[];
   siteVisits: SiteVisit[];
+  followUps: FollowUp[];
   latestConversation: Conversation | null;
 }
 
