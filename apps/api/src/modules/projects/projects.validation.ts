@@ -19,6 +19,11 @@ export const updateProjectBody = z
 
 export const knowledgeBody = z.object({ content: z.record(z.string(), z.unknown()) });
 
+/** A client's spreadsheet exported as CSV: `units` (apartment types or plots) or `faq` (question, answer). */
+export const importBody = z
+  .object({ kind: z.enum(["units", "faq"]), csv: z.string().min(1).max(500_000), dryRun: z.boolean().optional() })
+  .strict();
+
 export const membersBody = z.object({ userIds: z.array(z.string().uuid()).max(500) });
 
 export const listQuery = z.object({ includeArchived: z.enum(["true", "false"]).optional() });

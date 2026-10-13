@@ -7,6 +7,7 @@ import { assertCan, projectScopeFor } from "../../auth/access.js";
 import type { RequestContext } from "../../auth/context.js";
 import { auditService } from "../audit/audit.service.js";
 import { isKnowledgeCategory, knowledgeSchemas } from "./knowledge.schemas.js";
+import { importFaqCsv, importUnitsCsv, type ImportKind } from "./knowledge-import.js";
 
 /**
  * Service boundary for project data. Routes and AI tools (get_project_*)
@@ -146,6 +147,56 @@ export const projectsService = {
       metadata: { category },
     });
     return row;
+  },
+
+  /**
+   * Imports a client's spreadsheet (CSV) as project knowledge. `units` replaces the project's units and price ranges;
+   * `faq` replaces its questions. With `dryRun` nothing is written and the result shows what would be.
+   */
+  async importKnowledge(ctx: RequestContext, params: { projectId: string; kind: ImportKind; csv: string; dryRun?: boolean }) {
+    assertCan(ctx, "projects:update");
+    const existing = await findScoped(ctx, params.projectId);
+    if (!existing) return null;
+
+    const parsed = params.kind === "units" ? importUnitsCsv(params.csv) : importFaqCsv(params.csv);
+    const wrote: string[] = [];
+    if (parsed.accepted === 0) {
+      throw new ValidationError(`Nothing could be imported: ${parsed.rejected[0]?.reason ?? "no valid rows"}`);
+    }
+    if (!params.dryRun) {
+      if (parsed.kind === "units") {
+        await projectsService.upsertKnowledge(ctx, { projectId: existing.id, category: "configurations", content: { units: parsed.units } });
+        wrote.push("configurations");
+        if (parsed.ranges.length > 0 || parsed.perSqft) {
+          const [current] = await projectsRepository
+            .getKnowledge({ organizationId: ctx.organizationId, projectId: existing.id })
+            .then((rows) => rows.filter((r) => r.category === "pricing"));
+          const previous = (current?.content ?? {}) as { currency?: string; notes?: string };
+          await projectsService.upsertKnowledge(ctx, {
+            projectId: existing.id,
+            category: "pricing",
+            content: {
+              currency: previous.currency ?? "INR",
+              ranges: parsed.ranges,
+              ...(parsed.perSqft ? { perSqft: parsed.perSqft } : {}),
+              ...(previous.notes ? { notes: previous.notes } : {}),
+            },
+          });
+          wrote.push("pricing");
+        }
+      } else {
+        await projectsService.upsertKnowledge(ctx, { projectId: existing.id, category: "faq", content: { items: parsed.items } });
+        wrote.push("faq");
+      }
+    }
+    return {
+      kind: parsed.kind,
+      dryRun: params.dryRun === true,
+      accepted: parsed.accepted,
+      rejected: parsed.rejected,
+      wrote,
+      preview: parsed.kind === "units" ? parsed.units.slice(0, 5) : parsed.items.slice(0, 5),
+    };
   },
 
   /** Returns false when the project is not visible to the caller or has no such row. */

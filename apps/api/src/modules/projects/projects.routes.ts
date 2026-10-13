@@ -5,6 +5,7 @@ import { parseInput } from "../../shared/validation.js";
 import {
   createProjectBody,
   knowledgeBody,
+  importBody,
   listQuery,
   membersBody,
   projectCategoryParams,
@@ -64,6 +65,14 @@ export async function projectsRoutes(app: FastifyInstance) {
     const row = await projectsService.upsertKnowledge(requireContext(req), { projectId: id, category, content });
     if (!row) return reply.status(404).send(notFound);
     return reply.send({ data: row });
+  });
+
+  app.post<{ Params: { id: string } }>("/api/projects/:id/knowledge/import", async (req, reply) => {
+    const { id } = parseInput(projectIdParam, req.params);
+    const body = parseInput(importBody, req.body);
+    const result = await projectsService.importKnowledge(requireContext(req), { projectId: id, ...body });
+    if (!result) return reply.status(404).send(notFound);
+    return reply.send({ data: result });
   });
 
   app.delete<{ Params: { id: string; category: string } }>("/api/projects/:id/knowledge/:category", async (req, reply) => {
