@@ -41,6 +41,7 @@ import { systemContext } from "../auth/context.js";
 import { callRuntime } from "../modules/calls/call-runtime.js";
 import { detectReplyLanguage, replyLanguageName } from "../modules/ai-agent/reply-language.js";
 import { reviewReply } from "../modules/ai-agent/reply-quality.js";
+import { collapseRepetition } from "../modules/ai-agent/stt-text.js";
 import { chunkPcmForExotel, pcm16ToWav, pcmDurationMs, ttsAudioToPcm } from "../audio/pcm.js";
 import { TurnDetector } from "../audio/turn-detector.js";
 import { getConfig } from "../config/env.js";
@@ -336,6 +337,11 @@ export function handleExotelMediaStream(socket: WebSocket, hints: MediaStreamHin
       turn.metrics.mark("sttStart");
       ({ text, languageCode: heardLanguage } = await stt.transcribe(pcm16ToWav(pcm, sampleRate), { languageCode, signal: turn.signal, callId: internalCallId }));
       turn.metrics.mark("sttEnd");
+    }
+    const cleaned = collapseRepetition(text);
+    if (cleaned.collapsed) {
+      logger.warn("media-stream: repeated words collapsed in the transcript", { ...logCtx(), turnId: turn.turnId, removedWords: cleaned.removedWords });
+      text = cleaned.text;
     }
     if (!text.trim()) {
       turn.metrics.outcome = "empty";

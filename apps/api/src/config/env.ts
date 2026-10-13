@@ -206,6 +206,8 @@ export interface AppConfig {
   sarvam: {
     apiKey: string;
     sttModel: string;
+    /** Batch STT `mode`. `codemix` keeps English words in English script inside Indian-language speech. */
+    sttMode: string;
     llmModel: string;
     ttsModel: string;
     /**
@@ -387,6 +389,7 @@ export function getConfig(): AppConfig {
     sarvam: {
       apiKey: process.env.SARVAM_API_KEY ?? "",
       sttModel: process.env.SARVAM_STT_MODEL ?? "saaras:v3",
+      sttMode: process.env.SARVAM_STT_MODE ?? "codemix",
       llmModel: process.env.SARVAM_LLM_MODEL ?? "sarvam-105b-conversations",
       ttsModel: process.env.SARVAM_TTS_MODEL ?? "bulbul:v3",
       /** Streaming STT: wss://api.sarvam.ai/speech-to-text-realtime/ws (a different endpoint and model from the batch one). */
@@ -397,7 +400,7 @@ export function getConfig(): AppConfig {
       sttRealtimeModel: process.env.SARVAM_STT_REALTIME_MODEL ?? "saaras:v3-realtime",
       /** "fast" is Sarvam's recommendation for conversational agents. */
       sttRealtimeStreamType: process.env.SARVAM_STT_REALTIME_STREAM_TYPE ?? "fast",
-      sttRealtimeMode: process.env.SARVAM_STT_REALTIME_MODE ?? "transcribe",
+      sttRealtimeMode: process.env.SARVAM_STT_REALTIME_MODE ?? "codemix",
     },
   };
 }

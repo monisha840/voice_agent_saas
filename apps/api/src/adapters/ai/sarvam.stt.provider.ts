@@ -68,6 +68,7 @@ export class SarvamSttProvider implements ISpeechToText {
     const form = new FormData();
     form.append("file", new Blob([audio], { type: "audio/wav" }), "utterance.wav");
     form.append("model", sarvam.sttModel);
+    form.append("mode", sarvam.sttMode);
     if (opts?.languageCode) {
       form.append("language_code", opts.languageCode);
     }
