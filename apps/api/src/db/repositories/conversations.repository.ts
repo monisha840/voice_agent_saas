@@ -40,6 +40,22 @@ export const conversationsRepository = {
     return rows[0] ?? null;
   },
 
+  /**
+   * Removes the last transcript turn, but only if it is exactly this turn (same speaker and text): the agent decided the
+   * words were background talk, not part of the conversation. A different last turn is left alone.
+   */
+  async removeLastTurnIf(params: { organizationId: string; callId: string; speaker: TranscriptTurn["speaker"]; text: string }) {
+    const existing = await this.findByCallId({ organizationId: params.organizationId, callId: params.callId });
+    const current = (existing?.transcript as TranscriptTurn[] | null) ?? [];
+    const last = current[current.length - 1];
+    if (!last || last.speaker !== params.speaker || last.text !== params.text) return false;
+    await db
+      .update(conversations)
+      .set({ transcript: current.slice(0, -1) })
+      .where(and(eq(conversations.organizationId, params.organizationId), eq(conversations.callId, params.callId)));
+    return true;
+  },
+
   async setSummary(params: {
     organizationId: string;
     callId: string;

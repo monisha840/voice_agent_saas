@@ -134,6 +134,69 @@ describe("TurnDetector (continuous 100 ms frames)", () => {
   });
 });
 
+describe("TurnDetector with an adaptive noise floor", () => {
+  const noisyFrame = () => tone(FRAME, 900); // a steady room: a fan, a TV, people talking far away
+  const make = (over: Partial<ConstructorParameters<typeof TurnDetector>[0]> = {}) =>
+    new TurnDetector({
+      sampleRate: 8000,
+      energyThreshold: 500,
+      minSpeechMs: 400,
+      endSilenceMs: 700,
+      maxUtteranceMs: 15000,
+      preRollMs: 200,
+      floorMultiplier: 3,
+      ...over,
+    });
+  /** Feeds frames; returns every finished utterance's length in frames. */
+  const feed = (d: TurnDetector, frames: Buffer[]) => frames.map((f) => d.push(f)).filter((u): u is Buffer => u !== null);
+
+  it("without the multiplier a steady loud room is 'speech' (the original fixed threshold)", () => {
+    const d = make({ floorMultiplier: 0 });
+    feed(d, Array.from({ length: 20 }, noisyFrame));
+    expect(d.speaking).toBe(true);
+    expect(d.threshold).toBe(500);
+  });
+
+  it("learns a steady room and stops treating it as the caller, within a few seconds", () => {
+    const d = make();
+    feed(d, Array.from({ length: 120 }, noisyFrame)); // 12 s of room noise
+    expect(d.noiseFloor).toBeGreaterThan(800);
+    expect(d.threshold).toBeGreaterThan(900); // above the room
+    expect(d.speaking).toBe(false);
+    // The room alone now produces no utterance.
+    expect(feed(d, Array.from({ length: 50 }, noisyFrame))).toEqual([]);
+  });
+
+  it("still hears the caller when they speak clearly over the room", () => {
+    const d = make();
+    feed(d, Array.from({ length: 120 }, noisyFrame));
+    const done = feed(d, [...Array.from({ length: 8 }, loudFrame), ...Array.from({ length: 10 }, noisyFrame)]);
+    expect(done).toHaveLength(1);
+  });
+
+  it("never raises the bar above maxAdaptiveThreshold: a very loud room does not deafen the agent to a clear voice", () => {
+    const d = make({ maxAdaptiveThreshold: 1500 });
+    feed(d, Array.from({ length: 120 }, () => tone(FRAME, 6000)));
+    expect(d.threshold).toBeLessThanOrEqual(1500);
+  });
+
+  it("a quiet room keeps the base threshold", () => {
+    const d = make();
+    feed(d, Array.from({ length: 100 }, quietFrame));
+    expect(d.threshold).toBe(500);
+  });
+
+  it("speech with pauses does not drag the floor up to the speech level", () => {
+    const d = make();
+    feed(d, Array.from({ length: 20 }, quietFrame));
+    // 6 s of a caller talking with 300 ms pauses
+    const talk: Buffer[] = [];
+    for (let i = 0; i < 15; i++) talk.push(loudFrame(), loudFrame(), loudFrame(), quietFrame(), quietFrame());
+    feed(d, talk);
+    expect(d.noiseFloor).toBeLessThan(500);
+  });
+});
+
 describe("mock speech survives the real audio path", () => {
   it("scripted text -> PCM frames -> turn detector -> WAV -> mock STT returns the exact text", async () => {
     const text = "I'm looking for a 2 BHK. My budget is around 70 lakhs.";

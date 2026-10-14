@@ -40,7 +40,7 @@ describe("GET /api/tools", () => {
   it("lists every tool as available when the sales module is on", async () => {
     const { status, body } = await getTools(cookieOn);
     expect(status).toBe(200);
-    expect(body.data!.length).toBe(10);
+    expect(body.data!.length).toBe(11);
     expect(body.data!.every((t) => t.available)).toBe(true);
     expect(body.data!.find((t) => t.name === "book_site_visit")).toMatchObject({ module: "sales", requires: ["lead", "project"] });
   });

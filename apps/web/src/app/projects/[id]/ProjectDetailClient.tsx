@@ -8,6 +8,8 @@ import { can } from "@/lib/permissions";
 import type { ProjectMember, ProjectWithKnowledge, Role, TeamMember } from "@/lib/types";
 import { Badge, Button, Card, Field, Notice, errorMessage, inputClass } from "@/components/ui";
 import { KnowledgeEditors } from "./KnowledgeEditors";
+import { KnowledgeDraftPanel } from "./KnowledgeDraftPanel";
+import { UnansweredPanel } from "./UnansweredPanel";
 
 export function ProjectDetailClient({
   project: initial,
@@ -55,6 +57,14 @@ export function ProjectDetailClient({
           <p className="mb-4 text-sm text-stone-500">
             This is everything the AI agent may say about the project. Anything not listed here is never invented.
           </p>
+          {canEdit && (
+            <div className="mb-4">
+              <KnowledgeDraftPanel projectId={project.id} existing={(project.knowledge ?? []).map((k) => k.category)} />
+            </div>
+          )}
+          <div className="mb-4">
+            <UnansweredPanel projectId={project.id} />
+          </div>
           <KnowledgeEditors projectId={project.id} knowledge={project.knowledge ?? []} canEdit={canEdit} />
         </div>
 

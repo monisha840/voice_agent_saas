@@ -48,7 +48,12 @@ export interface TurnControllerOptions {
   vad: TurnDetector;
   /** Aborts when the whole call ends. */
   callSignal: AbortSignal;
-  bargeIn?: { enabled: boolean; minSpeechMs: number };
+  bargeIn?: {
+    enabled: boolean;
+    minSpeechMs: number;
+    /** The caller's voiced level must be this many times the noise floor (0 or absent = no level check). */
+    energyRatio?: number;
+  };
   /** Finished caller utterances allowed to wait behind the turn in flight. Default 2. */
   maxPendingUtterances?: number;
   /** What a caller turn does: STT → conversation → speak. Must honour `turn.signal`. */
@@ -76,6 +81,8 @@ export interface TurnControllerOptions {
 }
 
 interface PendingUtterance {
+  noiseFloor?: number;
+  voicedRms?: number;
   pcm: Buffer;
   ref?: unknown;
   speechStartAt?: number;
@@ -93,7 +100,7 @@ export class TurnController {
   private readonly machine: TurnStateMachine;
   private readonly now: () => number;
   private readonly log: TurnLogger;
-  private readonly bargeIn: { enabled: boolean; minSpeechMs: number };
+  private readonly bargeIn: { enabled: boolean; minSpeechMs: number; energyRatio?: number };
   private readonly maxPending: number;
   private pending: PendingUtterance[] = [];
   private current: { ctx: TurnContext; abort: AbortController; done: Promise<void> } | null = null;
@@ -155,12 +162,12 @@ export class TurnController {
         this.speechStartAt = this.now();
         this.userActivity();
         this.enterUserSpeaking();
-        this.maybeBargeIn(r.speechMs);
+        this.maybeBargeIn(r);
         return;
       case "speech":
         this.userActivity();
         this.enterUserSpeaking();
-        this.maybeBargeIn(r.speechMs);
+        this.maybeBargeIn(r);
         return;
       case "pause":
         this.userActivity();
@@ -174,8 +181,10 @@ export class TurnController {
         return;
       case "speech_end":
         this.userActivity();
-        this.maybeBargeIn(r.speechMs);
+        this.maybeBargeIn(r);
         this.enqueueUtterance({
+          noiseFloor: r.noiseFloor,
+          voicedRms: r.voicedRms,
           pcm: r.utterance!,
           ref,
           speechStartAt: this.speechStartAt,
@@ -261,8 +270,12 @@ export class TurnController {
     if (this.machine.state === "IDLE" || this.machine.state === "USER_SILENCE") this.go("USER_SPEAKING", "speech");
   }
 
-  private maybeBargeIn(speechMs: number): void {
-    if (!this.bargeIn.enabled || speechMs < this.bargeIn.minSpeechMs) return;
+  private maybeBargeIn(r: VadResult): void {
+    if (!this.bargeIn.enabled || r.speechMs < this.bargeIn.minSpeechMs) return;
+    // Interrupting needs a clearly strong voice, not just duration: room talk and echo are long but not louder than the
+    // room. Only checked once the room's noise floor is known (a silent line has none).
+    const ratio = this.bargeIn.energyRatio ?? 0;
+    if (ratio > 0 && (r.noiseFloor ?? 0) > 0 && (r.voicedRms ?? 0) < (r.noiseFloor ?? 0) * ratio) return;
     const s = this.machine.state;
     if (this.current && (s === "PROCESSING" || s === "AI_SPEAKING")) this.interruptCurrent("barge_in");
   }
@@ -304,6 +317,8 @@ export class TurnController {
     this.begin("user", item.ref, (turn) => {
       if (item.speechStartAt !== undefined) turn.metrics.mark("speechStart", item.speechStartAt);
       turn.metrics.mark("speechEnd", item.speechEndAt);
+      turn.metrics.noiseFloor = item.noiseFloor;
+      turn.metrics.voicedRms = item.voicedRms;
       return this.opts.runUserTurn(item.pcm, turn);
     });
   }

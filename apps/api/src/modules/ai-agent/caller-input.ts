@@ -37,13 +37,56 @@ export function isFillerOnly(text: string): boolean {
   return w.every((token) => FILLERS.has(token));
 }
 
+/** How many words (letters or digits) a transcript has. */
+export const wordCount = (text: string) => words(text).length;
+
+/** A token with no letter in it: a number, a currency amount, a symbol ("₹100", "100", "%"). */
+const hasLetter = (token: string) => /\p{L}/u.test(token);
+
 /**
- * Should this utterance be dropped before the agent sees it? Only short, content-free sounds are: a long filler may be
- * a real, if hesitant, answer, and anything with a word in it is kept.
+ * Text a recogniser makes up from noise: the same non-word token over and over ("₹100 ₹100 ₹100"), or one lone word
+ * stretched over several seconds of "speech". Real answers are neither: a number is said once, and a long utterance has
+ * several words.
+ */
+export function looksLikeNoiseTranscript(text: string, speechMs: number): boolean {
+  const raw = text.trim().split(/\s+/).filter(Boolean);
+  if (raw.length === 0) return true;
+  // The same token with no letters in it, three or more times and nothing else.
+  if (raw.length >= 3 && raw.every((t) => !hasLetter(t) && t === raw[0])) return true;
+  // One word spread over many seconds.
+  if (words(text).length <= 1 && speechMs >= NOISE_LONG_SPEECH_MS) return true;
+  return false;
+}
+
+/** One word taking this long to say is not speech (a recogniser hallucinating over a noisy stretch). */
+export const NOISE_LONG_SPEECH_MS = 4000;
+
+/**
+ * Should this utterance be dropped before the agent sees it? Short, content-free sounds are; so is text that has the
+ * shape of a recogniser's guess over noise. A long filler may be a real, if hesitant, answer, and anything with
+ * ordinary words in it is kept.
  */
 export function shouldIgnoreUtterance(text: string, speechMs: number): boolean {
   if (words(text).length === 0) return true;
+  if (looksLikeNoiseTranscript(text, speechMs)) return true;
   return isFillerOnly(text) && speechMs < FILLER_MAX_MS;
+}
+
+/** Indic languages that are not the ones this product's agents speak: hearing one is almost always someone else's TV or street. */
+const UNRELATED_LANGUAGES = new Set(["te", "kn", "ml", "bn", "gu", "mr", "pa", "od", "or", "as", "ur"]);
+
+const baseLanguage = (code: string) => code.toLowerCase().split(/[-_]/)[0];
+
+/**
+ * True when the recogniser says a SHORT utterance is in a language that neither the agent nor the caller has used on
+ * this call (e.g. Telugu on a Tamil call): background speech, not an answer. Longer utterances are never dropped on
+ * this ground alone (the recogniser's guess for a real caller can be wrong), and a language the call has used is allowed.
+ */
+export function isUnexpectedLanguage(heard: string | undefined, allowed: ReadonlyArray<string | undefined | null>, wordCount: number): boolean {
+  if (!heard || wordCount > 4) return false;
+  const h = baseLanguage(heard);
+  if (!UNRELATED_LANGUAGES.has(h)) return false;
+  return !allowed.some((a) => a && baseLanguage(a) === h);
 }
 
 const ENGLISH = "en-IN";
@@ -91,4 +134,35 @@ export function detectLanguageSwitchRequest(text: string): string | null {
     if (pattern.test(text)) hits.add(code);
   }
   return hits.size === 1 ? [...hits][0] : null;
+}
+
+/**
+ * The caller's own voice level, learned over the call, so that a clearly quieter voice (a television in the next room,
+ * people talking across the room) is not mistaken for them. The person on the phone is close to the microphone; the
+ * background is not, so it arrives well below their level. Only a pronounced drop is treated as background, and only
+ * once the caller's level is known from a couple of utterances.
+ */
+export class CallerLevelTracker {
+  private level = 0;
+  private seen = 0;
+
+  constructor(
+    /** An utterance below this fraction of the caller's level is background. */
+    private readonly ratio = 0.4,
+    /** Utterances needed before the level is trusted. */
+    private readonly minSamples = 2,
+  ) {}
+
+  /** Judges one utterance by its mean voiced RMS. Accepted utterances update the caller's level; background does not. */
+  isBackground(voicedRms: number | undefined): boolean {
+    if (voicedRms === undefined || voicedRms <= 0) return false;
+    if (this.seen >= this.minSamples && voicedRms < this.level * this.ratio) return true;
+    this.level = this.seen === 0 ? voicedRms : this.level * 0.7 + voicedRms * 0.3;
+    this.seen++;
+    return false;
+  }
+
+  get callerLevel(): number {
+    return this.level;
+  }
 }

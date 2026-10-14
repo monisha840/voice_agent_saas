@@ -63,6 +63,13 @@ export function WebCallRun({ agentId, leadId }: { agentId: string; leadId?: stri
   const [callId, setCallId] = useState<string | null>(null);
   const [call, setCall] = useState<CallDetail | null>(null);
   const [agentSpeaking, setAgentSpeaking] = useState(false);
+  /** Microphone loudness, 0..1, for the meter. */
+  const [level, setLevel] = useState(0);
+  // By default the page is half-duplex: while the agent is speaking (and just after) it sends silence instead of the
+  // microphone, so speakers cannot make the agent hear itself. Tick the box (with headphones) to talk over the agent.
+  const [allowInterrupt, setAllowInterrupt] = useState(false);
+  const allowInterruptRef = useRef(false);
+  allowInterruptRef.current = allowInterrupt;
 
   const session = useRef<{ stop: () => void } | null>(null);
   const poller = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -135,15 +142,29 @@ export function WebCallRun({ agentId, leadId }: { agentId: string; leadId?: stri
         if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(frame));
       };
 
+      // Agent audio goes out through an <audio> element, not straight to the speakers: browsers apply their echo
+      // canceller to audio elements, so what the agent says is subtracted from what the microphone hears.
+      const playbackDest = audioCtx.createMediaStreamDestination();
+      const playbackEl = new Audio();
+      playbackEl.srcObject = playbackDest.stream;
+      void playbackEl.play().catch(() => undefined);
+
       const source = audioCtx.createMediaStreamSource(micStream);
       const node = new AudioWorkletNode(audioCtx, "downsampler");
       node.port.onmessage = (e: MessageEvent<ArrayBuffer>) => {
         if (!live) return;
         chunk += 1;
+        const pcm = new Int16Array(e.data);
+        let sum = 0;
+        for (let i = 0; i < pcm.length; i++) sum += pcm[i] * pcm[i];
+        setLevel(Math.min(1, Math.sqrt(sum / Math.max(1, pcm.length)) / 6000));
+        // The agent is audibly speaking (queued audio not yet played, plus a short tail): send silence, not the room.
+        const agentAudible = audioCtx.currentTime < nextPlayAt + 0.5;
+        const bytes = !allowInterruptRef.current && agentAudible ? new Uint8Array(e.data.byteLength) : new Uint8Array(e.data);
         send({
           event: "media",
           stream_sid: streamSid,
-          media: { chunk: String(chunk), timestamp: String(chunk * 100), payload: b64FromBytes(new Uint8Array(e.data)) },
+          media: { chunk: String(chunk), timestamp: String(chunk * 100), payload: b64FromBytes(bytes) },
         });
       };
       const mute = audioCtx.createGain(); // keeps the node running without playing the microphone back
@@ -177,7 +198,10 @@ export function WebCallRun({ agentId, leadId }: { agentId: string; leadId?: stri
           // ignore
         }
         micStream.getTracks().forEach((t) => t.stop());
+        playbackEl.pause();
+        playbackEl.srcObject = null;
         void audioCtx.close().catch(() => undefined);
+        setLevel(0);
         session.current = null;
         setPhase("ended");
       };
@@ -227,7 +251,7 @@ export function WebCallRun({ agentId, leadId }: { agentId: string; leadId?: stri
           for (let i = 0; i < n; i++) data[i] = view.getInt16(i * 2, true) / 32768;
           const src = audioCtx.createBufferSource();
           src.buffer = buf;
-          src.connect(audioCtx.destination);
+          src.connect(playbackDest);
           const at = Math.max(audioCtx.currentTime + 0.05, nextPlayAt);
           src.start(at);
           nextPlayAt = at + buf.duration;
@@ -269,9 +293,14 @@ export function WebCallRun({ agentId, leadId }: { agentId: string; leadId?: stri
       <Card title="Web call">
         <div className="space-y-4">
           <p className="text-sm text-stone-500">
-            Talk to the agent with your microphone. Use headphones: speaker audio can be picked up by the microphone and
-            heard by the agent. The browser will ask for microphone permission.
+            Talk to the agent with your microphone. Headphones give the cleanest test: with speakers the microphone can pick
+            up the voice of the agent itself, and background voices are heard too. While the agent is speaking the page sends
+            silence, so wait for it to finish. The browser will ask for microphone permission.
           </p>
+          <label className="flex items-center gap-2 text-sm text-stone-600">
+            <input type="checkbox" checked={allowInterrupt} onChange={(e) => setAllowInterrupt(e.target.checked)} />
+            Let me talk over the agent (use headphones)
+          </label>
           <div className="flex items-center gap-3">
             {running ? (
               <Button variant="secondary" busy={phase === "connecting"} disabled={phase === "connecting"} onClick={() => session.current?.stop()}>
@@ -284,6 +313,15 @@ export function WebCallRun({ agentId, leadId }: { agentId: string; leadId?: stri
             )}
             {phase === "live" && (
               <span className="text-sm text-stone-600">{agentSpeaking ? "Agent is speaking…" : "Listening…"}</span>
+            )}
+            {phase === "live" && (
+              <span
+                aria-label="Microphone level"
+                className="inline-block h-2 w-24 overflow-hidden rounded bg-stone-200"
+                title="Microphone level"
+              >
+                <span className="block h-full bg-emerald-500 transition-[width]" style={{ width: `${Math.round(level * 100)}%` }} />
+              </span>
             )}
           </div>
         </div>

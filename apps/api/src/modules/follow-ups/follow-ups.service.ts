@@ -6,6 +6,8 @@ import type { RequestContext } from "../../auth/context.js";
 import { NotFoundError } from "../../shared/errors.js";
 import { parseInput } from "../../shared/validation.js";
 import { auditService } from "../audit/audit.service.js";
+import { projectsRepository } from "../../db/repositories/projects.repository.js";
+import { projectScopeFor } from "../../auth/access.js";
 
 const MAX_NOTE = 500;
 
@@ -40,7 +42,10 @@ export const followUpsService = {
     const existing = data.callId ? await followUpsRepository.findOpenForCall({ organizationId: org, callId: data.callId, kind: data.kind }) : null;
     let row;
     if (existing) {
-      row = (await followUpsRepository.update({ organizationId: org, id: existing.id, note: note ?? existing.note, dueAt: dueAt ?? existing.dueAt })) ?? existing;
+      // Several things the agent could not answer on one call are all kept; for the other kinds the latest note wins.
+      const merged =
+        data.kind === "info_requested" && note && existing.note && !existing.note.includes(note) ? `${existing.note}; ${note}`.slice(0, MAX_NOTE) : (note ?? existing.note);
+      row = (await followUpsRepository.update({ organizationId: org, id: existing.id, note: merged, dueAt: dueAt ?? existing.dueAt })) ?? existing;
     } else {
       row = await followUpsRepository.create({ organizationId: org, leadId: data.leadId, callId: data.callId, kind: data.kind, note, dueAt });
       await auditService.record(ctx, {
@@ -62,6 +67,14 @@ export const followUpsService = {
     const lead = await leadsRepository.findById({ organizationId: ctx.organizationId, id: params.leadId, scope: await leadScopeFor(ctx) });
     if (!lead) throw new NotFoundError(`Lead ${params.leadId} not found`);
     return followUpsRepository.listByLead({ organizationId: ctx.organizationId, leadId: params.leadId });
+  },
+
+  /** Questions callers asked about a project that the agent could not answer (the project must be visible to the caller). */
+  async unansweredForProject(ctx: RequestContext, params: { projectId: string }) {
+    assertCan(ctx, "projects:read");
+    const project = await projectsRepository.findById({ organizationId: ctx.organizationId, id: params.projectId, scope: await projectScopeFor(ctx) });
+    if (!project) throw new NotFoundError(`Project ${params.projectId} not found`);
+    return followUpsRepository.listInfoRequestsForProject({ organizationId: ctx.organizationId, projectId: params.projectId });
   },
 
   async listOpen(ctx: RequestContext) {

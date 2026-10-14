@@ -18,6 +18,8 @@ import type {
   FollowUpQueueItem,
   Invitation,
   KnowledgeCategory,
+  KnowledgeDraft,
+  UnansweredQuestion,
   Lead,
   LeadDetail,
   LeadInput,
@@ -224,6 +226,10 @@ export function createApi(getExtraHeaders: HeaderProvider = () => ({})) {
     unarchiveProject: (id: string) => send<Project>("POST", `/api/projects/${id}/unarchive`),
     saveKnowledge: (id: string, category: KnowledgeCategory, content: unknown) =>
       send<unknown>("PUT", `/api/projects/${id}/knowledge/${category}`, { content }),
+    /** Proposes structured knowledge from pasted brochure / price-sheet / FAQ text. Saves nothing. */
+    draftKnowledge: (id: string, text: string) => send<KnowledgeDraft>("POST", `/api/projects/${id}/knowledge/draft`, { text }),
+    /** Questions callers asked about this project that the agent could not answer. */
+    listUnanswered: (id: string) => request<UnansweredQuestion[]>(`/api/projects/${id}/unanswered`),
     deleteKnowledge: (id: string, category: KnowledgeCategory) =>
       send<unknown>("DELETE", `/api/projects/${id}/knowledge/${category}`),
     listProjectMembers: (id: string) => request<ProjectMember[]>(`/api/projects/${id}/members`),

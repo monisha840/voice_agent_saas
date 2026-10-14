@@ -85,7 +85,39 @@ const maintenance = z.object({
   notes: note.optional(),
 });
 
-export const knowledgeSchemas = { pricing, configurations, amenities, possession, location, faq, rera, loan, booking, maintenance } as const;
+/** Places a caller asks about: schools, hospitals, offices, transport. Distances are as the lead would hear them. */
+export const NEARBY_TYPES = ["school", "college", "hospital", "it_park", "office", "mall", "market", "metro", "railway", "bus", "airport", "highway", "temple", "park", "other"] as const;
+
+const nearby = z.object({
+  items: z
+    .array(
+      z.object({
+        name: short,
+        type: z.enum(NEARBY_TYPES).optional(),
+        distanceKm: z.number().min(0).max(1000).optional(),
+        travelMinutes: z.number().int().min(0).max(1440).optional(),
+        notes: note.optional(),
+      }),
+    )
+    .max(200),
+});
+
+const approvals = z.object({
+  items: z.array(z.object({ authority: short, number: short.optional(), notes: note.optional() })).max(30),
+  notes: note.optional(),
+});
+
+const builder = z.object({
+  name: short,
+  yearsInBusiness: z.number().int().min(0).max(200).optional(),
+  completedProjects: z.number().int().min(0).max(100_000).optional(),
+  notes: note.optional(),
+});
+
+/** The project in the builder's own words: the pitch, positioning, what makes it different. Quoted, not improved on. */
+const about = z.object({ text: z.string().trim().min(1).max(2000) });
+
+export const knowledgeSchemas = { pricing, configurations, amenities, possession, location, faq, rera, loan, booking, maintenance, nearby, approvals, builder, about } as const;
 
 export type KnowledgeCategory = keyof typeof knowledgeSchemas;
 

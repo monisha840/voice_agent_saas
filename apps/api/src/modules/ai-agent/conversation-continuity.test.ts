@@ -128,3 +128,140 @@ describe("the reminder of what was already said", () => {
     expect(requests[0].messages.some((m) => String(m.content).includes("Do not repeat yourself"))).toBe(false);
   });
 });
+
+describe("going round in circles", () => {
+  const SAME = "I am an AI assistant, would you like to see the visit slots for this Saturday?";
+
+  it("a repeated reply makes the next request carry a note to change tack", async () => {
+    const { llm, requests } = strictScripted([{ content: SAME }, { content: SAME }, { content: "Okay, the 2 BHK is 65 to 78 lakhs." }]);
+    const session = new ConversationSession(llm, toolCtx, {}, undefined);
+    await session.handleUserUtterance("who is this");
+    expect(requests[0].messages.some((m) => String(m.content).includes("You have just repeated yourself"))).toBe(false);
+    await session.handleUserUtterance("but what is your name");
+    // The second reply repeated the first; the third request is told.
+    expect(requests[1].messages.some((m) => String(m.content).includes("You have just repeated yourself"))).toBe(false);
+    await session.handleUserUtterance("price?");
+    expect(requests[2].messages.some((m) => String(m.content).includes("You have just repeated yourself"))).toBe(true);
+  });
+
+  it("a note is not kept once the agent says something new", async () => {
+    const { llm, requests } = strictScripted([{ content: SAME }, { content: SAME }, { content: "The 2 BHK is 65 to 78 lakhs, floor and facing change it." }, { content: "Saturday has 10 and 11:30." }]);
+    const session = new ConversationSession(llm, toolCtx, {}, undefined);
+    await session.handleUserUtterance("one");
+    await session.handleUserUtterance("two");
+    await session.handleUserUtterance("three");
+    await session.handleUserUtterance("four");
+    expect(requests[3].messages.some((m) => String(m.content).includes("You have just repeated yourself"))).toBe(false);
+  });
+
+  it("after the agent has repeated itself three times in a row it wraps the call up", async () => {
+    const { llm, requests } = strictScripted([
+      { content: SAME },
+      { content: SAME },
+      { content: SAME },
+      { content: SAME },
+      { content: "The team will call you shortly. Thank you, goodbye." },
+    ]);
+    const session = new ConversationSession(llm, toolCtx, {}, undefined);
+    for (const t of ["a", "b", "c", "d"]) {
+      const r = await session.handleUserUtterance(t);
+      expect(r.shouldEndCall).toBe(false);
+    }
+    const closing = await session.handleUserUtterance("e");
+    expect(closing).toMatchObject({ spokenText: "The team will call you shortly. Thank you, goodbye.", shouldEndCall: true });
+    expect(requests[4].toolChoice).toBe("none");
+  });
+});
+
+describe("a goodbye that was only said", () => {
+  it("a reply announcing the call is closed ends the call, even though end_call was not called", async () => {
+    const { llm } = strictScripted([{ content: "I have closed the call now. Thank you, goodbye." }]);
+    const session = new ConversationSession(llm, toolCtx, {}, undefined);
+    const r = await session.handleUserUtterance("hmm");
+    expect(r.shouldEndCall).toBe(true);
+  });
+
+  it("an offer to close it does not", async () => {
+    const { llm } = strictScripted([{ content: "Shall I close the call, or is there anything else?" }]);
+    const session = new ConversationSession(llm, toolCtx, {}, undefined);
+    const r = await session.handleUserUtterance("hmm");
+    expect(r.shouldEndCall).toBe(false);
+  });
+});
+
+describe("words that were not meant for the agent", () => {
+  it("the model answers SILENT: nothing is spoken, and the words leave the history and the record", async () => {
+    const { llm, requests } = strictScripted([{ content: "Hello, this is Priya." }, { content: "SILENT" }, { content: "The 2 BHK is 65 to 78 lakhs." }]);
+    const session = new ConversationSession(llm, toolCtx, {}, undefined);
+    await session.start();
+    const r = await session.handleUserUtterance("arre yaar picture chalo jaldi");
+    expect(r).toMatchObject({ spokenText: "", shouldEndCall: false, silent: true });
+    await session.handleUserUtterance("what is the price");
+    const seen = requests[2].messages.map((m) => String(m.content));
+    expect(seen.some((c) => c.includes("picture chalo"))).toBe(false); // the model never sees it again
+    expect(seen.some((c) => c.includes("what is the price"))).toBe(true);
+  });
+
+  it("is also recognised with punctuation or brackets, in any case", async () => {
+    for (const reply of ["SILENT", "silent.", "[SILENT]", "  Silent  "]) {
+      const { llm } = strictScripted([{ content: reply }]);
+      const session = new ConversationSession(llm, toolCtx, {}, undefined);
+      expect((await session.handleUserUtterance("noise")).silent).toBe(true);
+    }
+  });
+
+  it("only the bare word counts: a sentence that contains it is a reply", async () => {
+    const { llm } = strictScripted([{ content: "It is quiet here, silent as a library." }]);
+    const session = new ConversationSession(llm, toolCtx, {}, undefined);
+    const r = await session.handleUserUtterance("how is the place");
+    expect(r.silent).toBeUndefined();
+    expect(r.spokenText).toContain("silent as a library");
+  });
+
+  it("after two silences in a row the next is not trusted: a real caller is asked to repeat", async () => {
+    const { llm } = strictScripted([{ content: "SILENT" }, { content: "SILENT" }, { content: "SILENT" }]);
+    const session = new ConversationSession(llm, toolCtx, {}, undefined);
+    expect((await session.handleUserUtterance("a")).silent).toBe(true);
+    expect((await session.handleUserUtterance("b")).silent).toBe(true);
+    const third = await session.handleUserUtterance("c");
+    expect(third.silent).toBeUndefined();
+    expect(third.spokenText).toBe(fixedLine("retry", "en-IN"));
+  });
+
+  it("is never applied to the call's own goodbye", async () => {
+    const { llm } = strictScripted([{ toolCalls: [{ id: "e", name: "end_call", arguments: {} }] }, { content: "SILENT" }]);
+    const session = new ConversationSession(llm, toolCtx, {}, undefined);
+    const r = await session.handleUserUtterance("bye");
+    expect(r.silent).toBeUndefined();
+    expect(r.shouldEndCall).toBe(true);
+    expect(r.spokenText.length).toBeGreaterThan(0);
+  });
+});
+
+describe("a question the caller did not answer is not asked again word for word", () => {
+  const Q = "When are you planning to buy, and will you need a home loan?";
+
+  it("the repeat is dropped from the reply and from what is stored", async () => {
+    const { llm, requests } = strictScripted([
+      { content: `Great. ${Q}` },
+      { content: `I am an AI assistant. ${Q}` },
+      { content: "Okay." },
+    ]);
+    const session = new ConversationSession(llm, toolCtx, {}, undefined);
+    await session.handleUserUtterance("yes");
+    const second = await session.handleUserUtterance("who are you");
+    expect(second.spokenText).toBe("I am an AI assistant.");
+    await session.handleUserUtterance("ok");
+    const stored = requests[2].messages.filter((m) => m.role === "assistant").map((m) => m.content);
+    expect(stored.at(-1)).toBe("I am an AI assistant.");
+  });
+
+  it("a reply that is nothing but the repeated question is kept rather than made silent", async () => {
+    const { llm } = strictScripted([{ content: `Great. ${Q}` }, { content: Q }]);
+    const session = new ConversationSession(llm, toolCtx, {}, undefined);
+    await session.handleUserUtterance("yes");
+    const second = await session.handleUserUtterance("hmm");
+    expect(second.spokenText).toBe(Q);
+  });
+});
+

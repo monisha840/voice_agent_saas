@@ -9,8 +9,8 @@ import { agentConfigs, agentKnowledgeBindings, agents, calls } from "../../db/sc
 import { cleanupTenants, createTenant, type TestTenant } from "../../test/tenants.js";
 import { SALES_TOOL_NAMES } from "../sales/sales-constants.js";
 
-/** The list migration 0007 writes: every tool that existed then (request_follow_up came with migration 0010). */
-const LEGACY_SALES_TOOL_NAMES = SALES_TOOL_NAMES.filter((n) => n !== "request_follow_up");
+/** The list migration 0007 writes: every tool that existed then (request_follow_up and get_nearby_places came later). */
+const LEGACY_SALES_TOOL_NAMES = SALES_TOOL_NAMES.filter((n) => n !== "request_follow_up" && n !== "get_nearby_places");
 
 let T1: TestTenant; // org-default config with empty allowed_tools + a project override
 let T2: TestTenant; // no config at all

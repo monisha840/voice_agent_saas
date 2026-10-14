@@ -408,6 +408,146 @@ const maintenance: Spec<MaintenanceState> = {
   ),
 };
 
+const NEARBY_TYPES = ["school", "college", "hospital", "it_park", "office", "mall", "market", "metro", "railway", "bus", "airport", "highway", "temple", "park", "other"];
+
+interface NearbyState {
+  items: { name: string; type: string; distanceKm: string; travelMinutes: string }[];
+}
+const nearby: Spec<NearbyState> = {
+  title: "Nearby places",
+  hint: "Schools, hospitals, offices, transport and landmarks, with distance and travel time. The agent only names places listed here.",
+  empty: { items: [{ name: "", type: "other", distanceKm: "", travelMinutes: "" }] },
+  parse: (c) => ({
+    items: rows(obj(c).items).map((r) => ({ name: str(r.name), type: str(r.type) || "other", distanceKm: str(r.distanceKm), travelMinutes: str(r.travelMinutes) })),
+  }),
+  serialize: (v) => ({
+    items: v.items
+      .filter((r) => r.name.trim() !== "")
+      .map((r, i) =>
+        compact({
+          name: r.name.trim(),
+          type: opt(r.type),
+          distanceKm: optNum(r.distanceKm, `Place ${i + 1} distance`),
+          travelMinutes: optNum(r.travelMinutes, `Place ${i + 1} travel time`),
+        }),
+      ),
+  }),
+  Form: ({ value, onChange, disabled }) => (
+    <div className="space-y-3">
+      {value.items.map((r, i) => (
+        <div key={i} className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_8rem_6rem_6rem_auto]">
+          <input disabled={disabled} placeholder="Place name" value={r.name} onChange={(e) => onChange({ items: replaceAt(value.items, i, { name: e.target.value }) })} className={inputClass} />
+          <select disabled={disabled} value={r.type} onChange={(e) => onChange({ items: replaceAt(value.items, i, { type: e.target.value }) })} className={inputClass}>
+            {NEARBY_TYPES.map((t) => (
+              <option key={t} value={t}>
+                {t.replace("_", " ")}
+              </option>
+            ))}
+          </select>
+          <input disabled={disabled} inputMode="decimal" placeholder="km" value={r.distanceKm} onChange={(e) => onChange({ items: replaceAt(value.items, i, { distanceKm: e.target.value }) })} className={inputClass} />
+          <input disabled={disabled} inputMode="numeric" placeholder="minutes" value={r.travelMinutes} onChange={(e) => onChange({ items: replaceAt(value.items, i, { travelMinutes: e.target.value }) })} className={inputClass} />
+          {!disabled && <RemoveRow onClick={() => onChange({ items: value.items.filter((_, j) => j !== i) })} />}
+        </div>
+      ))}
+      {!disabled && <AddRow label="Add place" onClick={() => onChange({ items: [...value.items, { name: "", type: "other", distanceKm: "", travelMinutes: "" }] })} />}
+    </div>
+  ),
+};
+
+interface ApprovalsState {
+  items: { authority: string; number: string; notes: string }[];
+  notes: string;
+}
+const approvals: Spec<ApprovalsState> = {
+  title: "Approvals",
+  hint: "Authority approvals and registration numbers the agent may quote.",
+  empty: { items: [{ authority: "", number: "", notes: "" }], notes: "" },
+  parse: (c) => ({
+    items: rows(obj(c).items).map((r) => ({ authority: str(r.authority), number: str(r.number), notes: str(r.notes) })),
+    notes: str(obj(c).notes),
+  }),
+  serialize: (v) =>
+    compact({
+      items: v.items
+        .filter((r) => r.authority.trim() !== "")
+        .map((r) => compact({ authority: r.authority.trim(), number: opt(r.number), notes: opt(r.notes) })),
+      notes: opt(v.notes),
+    }),
+  Form: ({ value, onChange, disabled }) => (
+    <div className="space-y-3">
+      {value.items.map((r, i) => (
+        <div key={i} className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_1fr_auto]">
+          <input disabled={disabled} placeholder="Authority (e.g. DTCP)" value={r.authority} onChange={(e) => onChange({ ...value, items: replaceAt(value.items, i, { authority: e.target.value }) })} className={inputClass} />
+          <input disabled={disabled} placeholder="Number" value={r.number} onChange={(e) => onChange({ ...value, items: replaceAt(value.items, i, { number: e.target.value }) })} className={inputClass} />
+          <input disabled={disabled} placeholder="Notes" value={r.notes} onChange={(e) => onChange({ ...value, items: replaceAt(value.items, i, { notes: e.target.value }) })} className={inputClass} />
+          {!disabled && <RemoveRow onClick={() => onChange({ ...value, items: value.items.filter((_, j) => j !== i) })} />}
+        </div>
+      ))}
+      {!disabled && <AddRow label="Add approval" onClick={() => onChange({ ...value, items: [...value.items, { authority: "", number: "", notes: "" }] })} />}
+      <Field label="Notes (optional)">
+        <textarea disabled={disabled} rows={2} value={value.notes} onChange={(e) => onChange({ ...value, notes: e.target.value })} className={inputClass} />
+      </Field>
+    </div>
+  ),
+};
+
+interface BuilderState {
+  name: string;
+  yearsInBusiness: string;
+  completedProjects: string;
+  notes: string;
+}
+const builder: Spec<BuilderState> = {
+  title: "Builder",
+  hint: "Who is building the project, and their track record.",
+  empty: { name: "", yearsInBusiness: "", completedProjects: "", notes: "" },
+  parse: (c) => ({
+    name: str(obj(c).name),
+    yearsInBusiness: str(obj(c).yearsInBusiness),
+    completedProjects: str(obj(c).completedProjects),
+    notes: str(obj(c).notes),
+  }),
+  serialize: (v) =>
+    compact({
+      name: v.name.trim(),
+      yearsInBusiness: optNum(v.yearsInBusiness, "Years in business"),
+      completedProjects: optNum(v.completedProjects, "Completed projects"),
+      notes: opt(v.notes),
+    }),
+  Form: ({ value, onChange, disabled }) => (
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      <Field label="Builder name" className="sm:col-span-2">
+        <input disabled={disabled} value={value.name} onChange={(e) => onChange({ ...value, name: e.target.value })} className={inputClass} />
+      </Field>
+      <Field label="Years in business (optional)">
+        <input disabled={disabled} inputMode="numeric" value={value.yearsInBusiness} onChange={(e) => onChange({ ...value, yearsInBusiness: e.target.value })} className={inputClass} />
+      </Field>
+      <Field label="Completed projects (optional)">
+        <input disabled={disabled} inputMode="numeric" value={value.completedProjects} onChange={(e) => onChange({ ...value, completedProjects: e.target.value })} className={inputClass} />
+      </Field>
+      <Field label="Notes (optional)" className="sm:col-span-2">
+        <textarea disabled={disabled} rows={2} value={value.notes} onChange={(e) => onChange({ ...value, notes: e.target.value })} className={inputClass} />
+      </Field>
+    </div>
+  ),
+};
+
+interface AboutState {
+  text: string;
+}
+const about: Spec<AboutState> = {
+  title: "About the project",
+  hint: "The project in the builder's own words (2-3 sentences). The agent uses it for tell-me-about-the-project questions.",
+  empty: { text: "" },
+  parse: (c) => ({ text: str(obj(c).text) }),
+  serialize: (v) => ({ text: v.text.trim() }),
+  Form: ({ value, onChange, disabled }) => (
+    <Field label="Description">
+      <textarea disabled={disabled} rows={4} maxLength={2000} value={value.text} onChange={(e) => onChange({ text: e.target.value })} className={inputClass} />
+    </Field>
+  ),
+};
+
 /* ---------- card shell with per-category save ---------- */
 
 function KnowledgeCard<T>({
@@ -522,11 +662,15 @@ export function KnowledgeEditors({
     loan: <KnowledgeCard spec={loan} {...common("loan")} />,
     booking: <KnowledgeCard spec={booking} {...common("booking")} />,
     maintenance: <KnowledgeCard spec={maintenance} {...common("maintenance")} />,
+    nearby: <KnowledgeCard spec={nearby} {...common("nearby")} />,
+    approvals: <KnowledgeCard spec={approvals} {...common("approvals")} />,
+    builder: <KnowledgeCard spec={builder} {...common("builder")} />,
+    about: <KnowledgeCard spec={about} {...common("about")} />,
   };
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
       {KNOWLEDGE_CATEGORIES.map((c) => (
-        <div key={c} className={c === "faq" ? "lg:col-span-2" : ""}>
+        <div key={c} className={c === "faq" || c === "nearby" ? "lg:col-span-2" : ""}>
           {cards[c]}
         </div>
       ))}

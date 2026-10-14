@@ -96,6 +96,22 @@ describe("request_follow_up", () => {
   });
 });
 
+describe("questions the agent could not answer, per project", () => {
+  it("lists the information requests of the project's leads, newest first", async () => {
+    const rows = await followUpsService.unansweredForProject(owner, { projectId: A.projectId });
+    expect(rows.length).toBeGreaterThanOrEqual(1);
+    expect(rows.every((r) => typeof r.note === "string" || r.note === null)).toBe(true);
+    expect(rows.some((r) => r.note?.startsWith("Wants the brochure"))).toBe(true);
+    expect(rows[0].leadName).toBe("FUA Lead");
+  });
+
+  it("is limited to information requests (not callbacks) and to this organization", async () => {
+    const rows = await followUpsService.unansweredForProject(owner, { projectId: A.projectId });
+    expect(rows.every((r) => !r.note?.includes("Busy now"))).toBe(true);
+    await expect(followUpsService.unansweredForProject(ownerB, { projectId: A.projectId })).rejects.toThrow(/not found/i);
+  });
+});
+
 describe("who sees and clears follow-ups", () => {
   it("the queue lists open follow-ups with the lead's name, oldest first", async () => {
     const open = await followUpsService.listOpen(owner);

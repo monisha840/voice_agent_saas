@@ -42,7 +42,7 @@ import { callRuntime } from "../modules/calls/call-runtime.js";
 import { detectReplyLanguage, replyLanguageName } from "../modules/ai-agent/reply-language.js";
 import { reviewReply } from "../modules/ai-agent/reply-quality.js";
 import { collapseRepetition } from "../modules/ai-agent/stt-text.js";
-import { detectLanguageSwitchRequest, shouldIgnoreUtterance } from "../modules/ai-agent/caller-input.js";
+import { CallerLevelTracker, detectLanguageSwitchRequest, isUnexpectedLanguage, shouldIgnoreUtterance, wordCount } from "../modules/ai-agent/caller-input.js";
 import { chunkPcmForExotel, pcm16ToWav, pcmDurationMs, ttsAudioToPcm } from "../audio/pcm.js";
 import { TurnDetector } from "../audio/turn-detector.js";
 import { getConfig } from "../config/env.js";
@@ -124,6 +124,8 @@ export function handleExotelMediaStream(socket: WebSocket, hints: MediaStreamHin
   let replyInCallerLanguage = false;
   /** A language the caller explicitly asked for ("speak in English"). Sticky for the rest of the call. */
   let requestedLanguage: string | null = null;
+  /** How loud the caller is, learned over the call: a much quieter voice is the room, not them. */
+  const callerLevel = new CallerLevelTracker();
   /** Aborted when the call ends, so an in-flight STT / LLM / TTS request stops instead of finishing for nobody. */
   const abort = new AbortController();
   let session: ConversationSession | null = null;
@@ -162,6 +164,8 @@ export function handleExotelMediaStream(socket: WebSocket, hints: MediaStreamHin
       endSilenceMs: turnCfg.endSilenceMs,
       maxUtteranceMs: turnCfg.maxUtteranceMs,
       preRollMs: 200,
+      floorMultiplier: turnCfg.floorMultiplier,
+      maxAdaptiveThreshold: turnCfg.maxAdaptiveThreshold,
     });
   }
 
@@ -304,7 +308,7 @@ export function handleExotelMediaStream(socket: WebSocket, hints: MediaStreamHin
         throw err;
       }
       turn.metrics.mark("llmEnd");
-      if (speaker.sentenceCount === 0) speaker.push(result.spokenText); // e.g. a fixed fallback line that was never streamed
+      if (speaker.sentenceCount === 0 && result.spokenText) speaker.push(result.spokenText); // e.g. a fixed fallback line that was never streamed
       await speaker.finish();
       // The caller talked over this reply: the model's history keeps only what had been spoken.
       if (turn.metrics.interrupted) session?.noteInterrupted(speaker.synthesizedText);
@@ -363,6 +367,23 @@ export function handleExotelMediaStream(socket: WebSocket, hints: MediaStreamHin
       turn.metrics.outcome = "empty";
       return;
     }
+    // A voice far quieter than the caller's own is the television or the people around them.
+    if (callerLevel.isBackground(turn.metrics.voicedRms)) {
+      logger.info("media-stream: ignored a voice much quieter than the caller's", {
+        ...logCtx(),
+        turnId: turn.turnId,
+        voicedRms: Math.round(turn.metrics.voicedRms ?? 0),
+        callerLevel: Math.round(callerLevel.callerLevel),
+      });
+      turn.metrics.outcome = "empty";
+      return;
+    }
+    // Someone else's TV or street: a short utterance the recogniser hears in a language this call has not used.
+    if (isUnexpectedLanguage(heardLanguage, [ttsLanguageCode, languageCode, requestedLanguage], wordCount(text))) {
+      logger.info("media-stream: ignored speech in an unexpected language", { ...logCtx(), turnId: turn.turnId, heardLanguage });
+      turn.metrics.outcome = "empty";
+      return;
+    }
     // An explicit request to change language wins over everything else, from this turn until another request.
     const requested = detectLanguageSwitchRequest(text);
     if (requested) {
@@ -397,6 +418,12 @@ export function handleExotelMediaStream(socket: WebSocket, hints: MediaStreamHin
       if (err instanceof ProviderRequestError) turn.metrics.errorCategory = err.category;
       logger.warn("turn: failed", { ...logCtx(), turnId: turn.turnId, errorName: turn.metrics.errorName, ...providerErrorFields(err) });
       await speak(fixedLine("retry", ttsLanguageCode), turn);
+      return;
+    }
+    // The agent judged the words to be background talk and said nothing: no reply, and the turn is an empty one.
+    if (result.silent) {
+      logger.info("media-stream: the agent stayed silent (words not addressed to it)", { ...logCtx(), turnId: turn.turnId });
+      turn.metrics.outcome = "empty";
       return;
     }
     // Monitoring only: measure the reply and name known problems. Lengths and flags, never the words themselves.
@@ -440,6 +467,19 @@ export function handleExotelMediaStream(socket: WebSocket, hints: MediaStreamHin
   function endSession(reason: string) {
     if (closed) return;
     logger.info("media-stream: ending session", { ...logCtx(), reason });
+    // A line where most turns were cut off is a noisy or echoing line: say so once, in numbers.
+    if (controller && controller.stats.turnsStarted >= 6) {
+      const ratio = controller.stats.interruptions / controller.stats.turnsStarted;
+      if (ratio >= 0.4) {
+        logger.warn("media-stream: noisy or echoing line", {
+          ...logCtx(),
+          turns: controller.stats.turnsStarted,
+          interruptions: controller.stats.interruptions,
+          interruptedRatio: Number(ratio.toFixed(2)),
+          bargeIn: rt.bargeInEnabled,
+        });
+      }
+    }
     closed = true;
     abort.abort(); // stop any provider request still running for this call
     finishCall(reason === "init_failed" ? "failed" : "completed");
@@ -573,7 +613,7 @@ export function handleExotelMediaStream(socket: WebSocket, hints: MediaStreamHin
       ...(sttStream ? { onVadEvent: sttStream.onVadEvent, onUtteranceDropped: sttStream.drop, onVadReset: sttStream.onVadReset } : {}),
       vad: newDetector(),
       callSignal: abort.signal,
-      bargeIn: { enabled: rt.bargeInEnabled, minSpeechMs: rt.bargeInMinSpeechMs },
+      bargeIn: { enabled: rt.bargeInEnabled, minSpeechMs: rt.bargeInMinSpeechMs, energyRatio: rt.bargeInEnergyRatio },
       maxPendingUtterances: rt.maxPendingUtterances,
       runUserTurn,
       // Barge-in: drop whatever audio is still queued for the interrupted reply, and tell Exotel to flush what it already

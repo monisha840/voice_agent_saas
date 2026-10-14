@@ -67,6 +67,7 @@ const AI_TOOLS = [
   { name: "get_project_price", desc: "Approved pricing for a given configuration." },
   { name: "get_project_configurations", desc: "Available unit types and sizes." },
   { name: "get_project_location", desc: "Location and nearby landmarks." },
+  { name: "get_nearby_places", desc: "What is near the project: schools, hospitals, offices, transport, with distance." },
   { name: "check_visit_slots", desc: "Returns available site-visit slots." },
   { name: "book_site_visit", desc: "Books the chosen slot and updates lead status." },
   { name: "update_lead", desc: "Persists requirement/budget as understood from the call." },

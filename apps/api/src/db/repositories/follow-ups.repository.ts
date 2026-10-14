@@ -77,6 +77,26 @@ export const followUpsRepository = {
       .limit(params.limit ?? 200);
   },
 
+  /**
+   * What callers asked for that the agent could not answer, for one project: the info_requested notes of its leads, newest
+   * first. This is the list a client works from to fill the gaps in the project's knowledge.
+   */
+  async listInfoRequestsForProject(params: { organizationId: string; projectId: string; limit?: number }) {
+    return db
+      .select({ id: followUps.id, note: followUps.note, status: followUps.status, createdAt: followUps.createdAt, leadId: followUps.leadId, leadName: leads.name })
+      .from(followUps)
+      .innerJoin(leads, and(eq(leads.organizationId, followUps.organizationId), eq(leads.id, followUps.leadId)))
+      .where(
+        and(
+          eq(followUps.organizationId, params.organizationId),
+          eq(followUps.kind, "info_requested"),
+          eq(leads.projectId, params.projectId),
+        ),
+      )
+      .orderBy(desc(followUps.createdAt))
+      .limit(params.limit ?? 100);
+  },
+
   async findById(params: { organizationId: string; id: string }) {
     const rows = await db
       .select()

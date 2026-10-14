@@ -72,7 +72,7 @@ describe("buildSystemPrompt", () => {
 
 describe("tool filtering", () => {
   it("offers only allowed tools plus end_call; absent means unrestricted, empty means ONLY end_call", () => {
-    expect(getToolDefinitions().length).toBe(10);
+    expect(getToolDefinitions().length).toBe(11);
     expect(getToolDefinitions([]).map((t) => t.name)).toEqual(["end_call"]);
     const names = getToolDefinitions(["get_project_price"]).map((t) => t.name);
     expect(names.sort()).toEqual(["end_call", "get_project_price"]);
@@ -133,6 +133,6 @@ describe("live conversation wiring (spy LLM through the real ConversationSession
     const { llm, seen } = spy([{ content: "Hi" }]);
     await new ConversationSession(llm, ctx, params).start();
     expect(seen[0].messages[0].content).toBe(buildSystemPrompt(params));
-    expect(seen[0].tools.length).toBe(10);
+    expect(seen[0].tools.length).toBe(11);
   });
 });

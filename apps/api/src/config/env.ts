@@ -47,6 +47,10 @@ export interface AppConfig {
     energyThreshold: number;
     minSpeechMs: number;
     maxUtteranceMs: number;
+    /** Speech must exceed the room's noise floor by this factor (0 = fixed energyThreshold only). */
+    floorMultiplier: number;
+    /** The adaptive threshold never rises above this RMS. */
+    maxAdaptiveThreshold: number;
   };
   /** Real-time audio pipeline bounds (realtime/). */
   realtime: {
@@ -67,6 +71,8 @@ export interface AppConfig {
     /** Caller may interrupt the agent mid-reply. Off by default until verified on real phone audio (no echo cancellation here). */
     bargeInEnabled: boolean;
     bargeInMinSpeechMs: number;
+    /** Interrupting needs the caller's voiced level to be this many times the room's noise floor (0 = no level check). */
+    bargeInEnergyRatio: number;
     /** Finished caller utterances allowed to wait behind the turn in flight. */
     maxPendingUtterances: number;
     /** Outbound audio queued per call before a reply is refused. */
@@ -280,8 +286,11 @@ export function getConfig(): AppConfig {
     turn: {
       endSilenceMs: Number(process.env.TURN_END_SILENCE_MS ?? 700),
       energyThreshold: Number(process.env.TURN_ENERGY_THRESHOLD ?? 500),
-      minSpeechMs: Number(process.env.TURN_MIN_SPEECH_MS ?? 250),
+      // 400 ms: a cough, a click or a word from across the room is shorter than a real answer.
+      minSpeechMs: Number(process.env.TURN_MIN_SPEECH_MS ?? 400),
       maxUtteranceMs: Number(process.env.TURN_MAX_UTTERANCE_MS ?? 15000),
+      floorMultiplier: Math.max(0, Number(process.env.TURN_FLOOR_MULTIPLIER ?? 3)),
+      maxAdaptiveThreshold: Math.max(500, Number(process.env.TURN_MAX_ADAPTIVE_THRESHOLD ?? 1500)),
     },
     realtime: {
       sttProvider: readProviderKind(process.env.REALTIME_STT_PROVIDER, ["sarvam", "assemblyai"] as const, "sarvam"),
@@ -290,7 +299,9 @@ export function getConfig(): AppConfig {
       ttsStreaming: (process.env.REALTIME_TTS_STREAMING ?? "false") === "true",
       sttMaxQueuedBytes: Math.max(3200, intEnv("REALTIME_STT_MAX_QUEUED_BYTES", 256 * 1024)),
       bargeInEnabled: (process.env.REALTIME_BARGE_IN ?? "false") === "true",
-      bargeInMinSpeechMs: Math.max(100, intEnv("REALTIME_BARGE_IN_MIN_SPEECH_MS", 600)),
+      // Interrupting the agent is a deliberate act: a second of clear speech, not a noise.
+      bargeInMinSpeechMs: Math.max(100, intEnv("REALTIME_BARGE_IN_MIN_SPEECH_MS", 1000)),
+      bargeInEnergyRatio: Math.max(0, Number(process.env.REALTIME_BARGE_IN_ENERGY_RATIO ?? 6)),
       maxPendingUtterances: Math.max(1, intEnv("REALTIME_MAX_PENDING_UTTERANCES", 2)),
       maxOutboundQueueBytes: Math.max(3200, intEnv("REALTIME_MAX_OUTBOUND_QUEUE_BYTES", 4 * 1024 * 1024)),
       outboundHighWaterBytes: Math.max(3200, intEnv("REALTIME_OUTBOUND_HIGH_WATER_BYTES", 256 * 1024)),

@@ -43,7 +43,7 @@ describe("resolveEffectiveTools", () => {
   it("project without lead keeps project-only tools", () => {
     expect(
       resolveEffectiveTools({ enabledTools: [...ALL_TOOL_NAMES], enabledModules: ["sales"], context: { lead: false, project: true } }),
-    ).toEqual(["get_project_details", "get_project_price", "get_project_configurations", "get_project_location", "request_follow_up", "end_call"]);
+    ).toEqual(["get_project_details", "get_project_price", "get_project_configurations", "get_project_location", "get_nearby_places", "request_follow_up", "end_call"]);
   });
 
   it("empty enabledTools is explicit end_call only, never an empty list", () => {

@@ -43,6 +43,11 @@ export const projectKnowledgeCategoryEnum = pgEnum("project_knowledge_category",
   "loan",
   "booking",
   "maintenance",
+  // What a caller asks beyond price and size: what is nearby, approvals, who builds it, and the project in the builder's words.
+  "nearby",
+  "approvals",
+  "builder",
+  "about",
 ]);
 
 /**

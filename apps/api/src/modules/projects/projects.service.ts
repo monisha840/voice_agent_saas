@@ -8,6 +8,8 @@ import type { RequestContext } from "../../auth/context.js";
 import { auditService } from "../audit/audit.service.js";
 import { isKnowledgeCategory, knowledgeSchemas } from "./knowledge.schemas.js";
 import { importFaqCsv, importUnitsCsv, type ImportKind } from "./knowledge-import.js";
+import { buildDraftMessages, parseKnowledgeDraft, type KnowledgeDraft } from "./knowledge-draft.js";
+import { getLlmProvider } from "../../adapters/ai/index.js";
 
 /**
  * Service boundary for project data. Routes and AI tools (get_project_*)
@@ -147,6 +149,25 @@ export const projectsService = {
       metadata: { category },
     });
     return row;
+  },
+
+  /**
+   * Proposes structured knowledge from pasted brochure / price-sheet / FAQ text. Writes NOTHING: the proposal is shown to
+   * a person, and each approved category is saved through upsertKnowledge like any other edit.
+   */
+  async draftKnowledge(ctx: RequestContext, params: { projectId: string; text: string }): Promise<(KnowledgeDraft & { projectId: string }) | null> {
+    assertCan(ctx, "projects:update");
+    const existing = await findScoped(ctx, params.projectId);
+    if (!existing) return null;
+    const result = await getLlmProvider().chat(buildDraftMessages(params.text), []);
+    const draft = parseKnowledgeDraft(result.content ?? "");
+    await auditService.record(ctx, {
+      action: "project.knowledge_drafted",
+      entityType: "project",
+      entityId: existing.id,
+      metadata: { proposed: Object.keys(draft.drafts), rejected: draft.rejected.length },
+    });
+    return { projectId: existing.id, ...draft };
   },
 
   /**

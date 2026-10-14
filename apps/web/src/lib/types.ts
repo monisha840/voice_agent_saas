@@ -41,8 +41,29 @@ export const KNOWLEDGE_CATEGORIES = [
   "loan",
   "booking",
   "maintenance",
+  "nearby",
+  "approvals",
+  "builder",
+  "about",
 ] as const;
 export type KnowledgeCategory = (typeof KNOWLEDGE_CATEGORIES)[number];
+
+/** A proposal made from pasted brochure text: nothing is saved until a person approves a category. */
+export interface KnowledgeDraft {
+  projectId: string;
+  drafts: Partial<Record<KnowledgeCategory, unknown>>;
+  rejected: Array<{ category: string; reason: string }>;
+}
+
+/** A question callers asked about a project that the agent could not answer. */
+export interface UnansweredQuestion {
+  id: string;
+  note: string | null;
+  status: "open" | "done";
+  createdAt: string;
+  leadId: string | null;
+  leadName: string | null;
+}
 
 export interface ProjectKnowledge {
   id: string;

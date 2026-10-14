@@ -18,6 +18,12 @@ export async function followUpsRoutes(app: FastifyInstance) {
     return reply.send({ data: await followUpsService.listForLead(requireContext(req), { leadId: id }) });
   });
 
+  /** What callers asked about this project that the agent could not answer: the client's list of gaps to fill. */
+  app.get<{ Params: { id: string } }>("/api/projects/:id/unanswered", async (req, reply) => {
+    const { id } = parseInput(idParams, req.params);
+    return reply.send({ data: await followUpsService.unansweredForProject(requireContext(req), { projectId: id }) });
+  });
+
   app.post<{ Params: { id: string } }>("/api/follow-ups/:id/done", async (req, reply) => {
     const { id } = parseInput(idParams, req.params);
     const row = await followUpsService.resolve(requireContext(req), { id });

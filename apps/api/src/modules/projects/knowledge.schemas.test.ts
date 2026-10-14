@@ -12,6 +12,10 @@ const valid: Record<string, unknown> = {
   loan: { assistanceAvailable: true, banks: ["SBI"] },
   booking: { bookingAmount: 200000, currency: "INR", paymentPlan: "20:80" },
   maintenance: { chargesPerSqftPerMonth: 3.5 },
+  nearby: { items: [{ name: "Chromepet railway station", type: "railway", distanceKm: 2.5, travelMinutes: 8 }] },
+  approvals: { items: [{ authority: "DTCP", number: "123/2024" }] },
+  builder: { name: "Green Valley Developers", yearsInBusiness: 15 },
+  about: { text: "A gated community of 120 homes near the IT corridor." },
 };
 
 const invalid: Record<string, unknown[]> = {
@@ -25,10 +29,14 @@ const invalid: Record<string, unknown[]> = {
   loan: [{ assistanceAvailable: "yes" }, {}],
   booking: [{ bookingAmount: -5 }, { bookingAmount: 1.5 }],
   maintenance: [{ chargesPerSqftPerMonth: -1 }, { chargesPerSqftPerMonth: "3" }],
+  nearby: [{ items: [{ name: "x", type: "castle" }] }, { items: [{ name: "x", distanceKm: -1 }] }, { items: "school" }],
+  approvals: [{ items: [{ number: "1" }] }, {}],
+  builder: [{}, { name: "" }, { name: "x", yearsInBusiness: -1 }],
+  about: [{ text: "" }, { text: "a".repeat(2001) }, {}],
 };
 
 describe("knowledge schemas", () => {
-  it("covers exactly the ten categories", () => {
+  it("covers exactly the fourteen categories", () => {
     expect([...KNOWLEDGE_CATEGORIES].sort()).toEqual(Object.keys(valid).sort());
     expect(isKnowledgeCategory("rera")).toBe(true);
     expect(isKnowledgeCategory("hacks")).toBe(false);

@@ -394,6 +394,45 @@ describe("TurnController: barge-in", () => {
     expect(r.turns[1].pcm.length).toBe(8 * FRAME * 2); // the interrupting sentence (5 speech + 3 silence), not the stale one
   });
 
+  describe("with an energy ratio (the caller must be clearly louder than the room)", () => {
+    const toneFrame = (amplitude: number) => {
+      const b = Buffer.alloc(FRAME * 2);
+      for (let i = 0; i < FRAME; i++) b.writeInt16LE(i % 2 === 0 ? amplitude : -amplitude, i * 2);
+      return b;
+    };
+    const roomRig = () => {
+      const vad = new TurnDetector({ sampleRate: 8000, energyThreshold: 500, minSpeechMs: 200, endSilenceMs: 300, maxUtteranceMs: 15000, preRollMs: 200, floorMultiplier: 1 });
+      const r = rig({ bargeIn: { enabled: true, minSpeechMs: 300, energyRatio: 6 }, vad }, speakingTurn);
+      for (let i = 0; i < 15; i++) {
+        r.clock.t += 100;
+        r.c.pushAudio(toneFrame(450)); // a steady room just under the speech threshold: floor ~450
+      }
+      return r;
+    };
+    const push = (r: ReturnType<typeof rig>, amplitude: number, frames: number) => {
+      for (let i = 0; i < frames; i++) {
+        r.clock.t += 100;
+        r.c.pushAudio(toneFrame(amplitude));
+      }
+    };
+
+    it("speech that is long but only as loud as the room (echo, people talking nearby) does not interrupt", () => {
+      const r = roomRig();
+      r.say(); // a turn that is now speaking
+      expect(r.c.state).toBe("AI_SPEAKING");
+      push(r, 2000, 12); // 1.2 s, well over minSpeechMs, but only ~4x the room
+      expect(r.c.stats.interruptions).toBe(0);
+      expect(r.turns[0].ctx.signal.aborted).toBe(false);
+    });
+
+    it("a clearly stronger voice does interrupt", () => {
+      const r = roomRig();
+      r.say();
+      push(r, 8000, 5); // ~18x the room
+      expect(r.c.stats.interruptions).toBe(1);
+    });
+  });
+
   it("with barge-in off the same speech is only queued, never cancelling the reply", async () => {
     const r = rig({}, async (ctx, gate) => {
       await gate.promise;

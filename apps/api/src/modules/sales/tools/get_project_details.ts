@@ -9,7 +9,7 @@ export const getProjectDetails: AiTool = {
   definition: {
     name: "get_project_details",
     description:
-      "Get general details about the real-estate project: name, location, amenities, possession date, and frequently asked questions (RERA status, loan assistance, booking amount, maintenance charges). Use this for general questions not covered by a more specific tool.",
+      "Get general details about the real-estate project: name, location, amenities, possession date, approvals, the builder, a short description of the project, and frequently asked questions (RERA status, loan assistance, booking amount, maintenance charges). Use this for general questions not covered by a more specific tool.",
     parameters: { type: "object", properties: {}, required: [] },
   },
   async execute(_args, ctx) {
@@ -28,6 +28,11 @@ export const getProjectDetails: AiTool = {
     const loan = project.knowledge.find((k) => k.category === "loan")?.content;
     const booking = project.knowledge.find((k) => k.category === "booking")?.content;
     const maintenance = project.knowledge.find((k) => k.category === "maintenance")?.content;
+    // What callers ask beyond price and size. `nearby` is NOT returned here (it can be long): get_nearby_places looks it up.
+    const approvals = project.knowledge.find((k) => k.category === "approvals")?.content;
+    const builder = project.knowledge.find((k) => k.category === "builder")?.content;
+    const about = project.knowledge.find((k) => k.category === "about")?.content;
+    const hasNearby = project.knowledge.some((k) => k.category === "nearby");
 
     return {
       name: project.name,
@@ -40,6 +45,10 @@ export const getProjectDetails: AiTool = {
       loan,
       booking,
       maintenance,
+      approvals,
+      builder,
+      about,
+      nearbyPlacesAvailable: hasNearby ? "Use get_nearby_places to look up what is near the project." : undefined,
     };
   },
 };

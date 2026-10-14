@@ -27,7 +27,8 @@ import type { ResolvedAgentConfig } from "../agent-config/agent-config.types.js"
 import { logger } from "../../shared/logger.js";
 import { getConfig } from "../../config/env.js";
 import { fallbackLine, fixedLine } from "./fallback-lines.js";
-import { QuestionLimiter } from "./one-question.js";
+import { QuestionLimiter, questionsIn } from "./one-question.js";
+import { announcesEndOfCall, isRepeat } from "./loop-guard.js";
 
 export interface ConversationTurnResult {
   /** The spoken text to synthesize via TTS and play to the lead. */
@@ -39,9 +40,31 @@ export interface ConversationTurnResult {
   chunks?: string[];
   /** True if the model signaled the call should end after this turn. */
   shouldEndCall: boolean;
+  /**
+   * The model judged the caller's words to be background talk, not addressed to it, and chose to say nothing: no reply is
+   * spoken or recorded and the caller's words are taken back out of the conversation. `spokenText` is then empty.
+   */
+  silent?: boolean;
 }
 
 const MAX_TOOL_HOPS_PER_TURN = 4;
+
+/** Replies that repeated an earlier one, in a row, after which the agent is told to change tack. */
+const REPEAT_NOTE_AT = 1;
+/** ...and after which it wraps the call up instead of going round again. */
+const FORCE_CLOSE_AT = 3;
+/** How many of its latest replies the agent compares a new one against. */
+const REPEAT_WINDOW = 3;
+
+/** The one word the model answers with when the caller's words were not meant for it (see the prompt). */
+const SILENT_REPLY = /^\W*silent\W*$/i;
+/** After this many silences in a row the next one is not trusted: a real caller must not be ignored indefinitely. */
+const MAX_SILENCES_IN_ROW = 2;
+
+export const isSilentReply = (text: string): boolean => SILENT_REPLY.test(text.trim());
+
+const REPEAT_NOTE =
+  "You have just repeated yourself. Do not say it again in any form, and do not repeat that you are an AI assistant or that you cannot hear. If the lead asked for something you cannot give, say so in one new sentence, say the team will follow up, and ask one different useful question. If there is nothing left to ask, offer a callback and close politely.";
 
 /** A speakable piece of a streamed reply. Only the chunks of the FINAL hop (one that ends without tool calls) are the reply. */
 export interface TextChunk {
@@ -129,6 +152,12 @@ export class ConversationSession {
   /** Every tool-call id used in this conversation, so ids stay unique even if a provider reuses them (e.g. "call_0"). */
   private readonly usedToolCallIds = new Set<string>();
   private toolCallSeq = 0;
+  /** What the agent has said, latest last (bounded), to notice when it repeats itself. */
+  private recentReplies: string[] = [];
+  /** Replies in a row that repeated one of the last few. */
+  private repeatStreak = 0;
+  /** Caller utterances in a row that the model chose not to answer. */
+  private silentStreak = 0;
 
   constructor(
     private readonly llm: ILanguageModel,
@@ -153,8 +182,14 @@ export class ConversationSession {
   /** Call with each new transcribed lead utterance. */
   async handleUserUtterance(text: string, opts?: TurnOptions): Promise<ConversationTurnResult> {
     await this.recordTurn("lead", text);
-    this.pushUserMessage(text);
-    return this.runTurn(opts);
+    const undo = this.pushUserMessage(text);
+    const result = await this.runTurn(opts);
+    if (result.silent) {
+      // Not addressed to the agent: it is not part of the conversation, in the model's history or in the record.
+      undo();
+      await conversationsRepository.removeLastTurnIf({ organizationId: this.toolCtx.organizationId, callId: this.toolCtx.callId, speaker: "lead", text });
+    }
+    return result;
   }
 
   /**
@@ -163,10 +198,21 @@ export class ConversationSession {
    * the new words are added to it and the model answers both at once. (The transcript still records them as separate
    * caller turns.)
    */
-  private pushUserMessage(text: string): void {
+  private pushUserMessage(text: string): () => void {
     const last = this.messages[this.messages.length - 1];
-    if (last && last.role === "user") last.content = `${last.content}\n${text}`;
-    else this.messages.push({ role: "user", content: text });
+    if (last && last.role === "user") {
+      const before = last.content;
+      last.content = `${before}\n${text}`;
+      // Takes the words back out again (they turned out not to be addressed to the agent).
+      return () => {
+        if (this.messages[this.messages.length - 1] === last) last.content = before;
+      };
+    }
+    const added: ChatMessage = { role: "user", content: text };
+    this.messages.push(added);
+    return () => {
+      if (this.messages[this.messages.length - 1] === added) this.messages.pop();
+    };
   }
 
   /**
@@ -263,11 +309,13 @@ export class ConversationSession {
     }
 
     const chunker = new SentenceChunker();
-    const questions = new QuestionLimiter();
+    const questions = new QuestionLimiter(this.recentQuestions());
     const chunks: string[] = [];
     let sawToken = false;
     const emit = (raw: string) => {
       if (signal?.aborted) return;
+      // The model chose silence: nothing is spoken.
+      if (isSilentReply(raw)) return;
       // One question per reply: later questions are never spoken.
       const text = questions.filter(raw).text;
       if (!text) return;
@@ -335,6 +383,7 @@ export class ConversationSession {
         : `The caller is speaking ${language}. Write your reply to the caller in ${language}.`;
       out.push({ role: "system", content });
     }
+    if (!closing && this.repeatStreak >= REPEAT_NOTE_AT) out.push({ role: "system", content: REPEAT_NOTE });
     // Once end_call has run, a model that sees it in the history takes the conversation as finished and says nothing;
     // it is told plainly that the reply is still wanted, and what it must contain.
     if (closing) {
@@ -353,6 +402,12 @@ export class ConversationSession {
     /** Words the model put inside the end_call request itself (some models say goodbye there instead of in the reply). */
     let endCallMessage: string | null = null;
     const signal = opts?.signal;
+
+    // The conversation has gone round in circles: stop it here, politely, and leave the team a note.
+    if (this.repeatStreak >= FORCE_CLOSE_AT) {
+      shouldEndCall = true;
+      await this.noteStalledCall();
+    }
 
     for (let hop = 0; hop < MAX_TOOL_HOPS_PER_TURN; hop++) {
       if (signal?.aborted) throw new ConversationCancelledError();
@@ -399,10 +454,31 @@ export class ConversationSession {
       // A call that is ending must not end in silence: if the model said no closing words, use the ones it put in
       // end_call, else a short fixed goodbye in the call's language.
       let reply = result.content ?? "";
+      if (!shouldEndCall && isSilentReply(reply)) {
+        if (this.silentStreak < MAX_SILENCES_IN_ROW) {
+          this.silentStreak++;
+          logger.info("ai-agent: the caller's words were judged background talk; no reply", { callId: this.toolCtx.callId, streak: this.silentStreak });
+          return { spokenText: "", shouldEndCall: false, silent: true };
+        }
+        // Silent too many times in a row: this is probably a real caller. Ask them to repeat instead of ignoring them.
+        reply = fixedLine("retry", opts?.replyLanguage ?? this.agent?.language);
+      }
+      this.silentStreak = 0;
       if (shouldEndCall && !reply.trim()) reply = endCallMessage ?? fixedLine("goodbye", opts?.replyLanguage ?? this.agent?.language);
-      const limited = new QuestionLimiter().filter(reply);
+      let limited = new QuestionLimiter(this.recentQuestions()).filter(reply);
+      // If dropping a repeated question would leave nothing to say, the repeat is better than silence.
+      if (!limited.text.trim() && reply.trim()) limited = new QuestionLimiter().filter(reply);
       if (limited.dropped) logger.info("ai-agent: extra questions dropped from the reply", { callId: this.toolCtx.callId });
       const spokenText = limited.text;
+      // Saying the call is over is not enough to end it: if the reply announces it, the call really ends.
+      if (!shouldEndCall && announcesEndOfCall(spokenText)) {
+        shouldEndCall = true;
+        logger.warn("ai-agent: reply announced the end of the call without end_call; ending it", { callId: this.toolCtx.callId });
+      }
+      this.repeatStreak = isRepeat(spokenText, this.recentReplies.slice(-REPEAT_WINDOW)) ? this.repeatStreak + 1 : 0;
+      if (this.repeatStreak > 0) logger.info("ai-agent: reply repeats an earlier one", { callId: this.toolCtx.callId, streak: this.repeatStreak });
+      this.recentReplies.push(spokenText);
+      if (this.recentReplies.length > 2 * REPEAT_WINDOW) this.recentReplies.shift();
       this.messages.push({ role: "assistant", content: spokenText });
       await this.recordTurn("ai", spokenText);
 
@@ -413,6 +489,25 @@ export class ConversationSession {
     const fallback = fallbackLine(opts?.replyLanguage ?? this.agent?.language);
     await this.recordTurn("ai", fallback);
     return { spokenText: fallback, shouldEndCall: true };
+  }
+
+  /** The questions in the agent's last two replies: asking one of them again, word for word, is dropped. */
+  private recentQuestions(): string[] {
+    const replies = this.messages.filter((m) => m.role === "assistant" && (m.toolCalls?.length ?? 0) === 0 && m.content.trim() !== "");
+    return replies.slice(-2).flatMap((m) => questionsIn(m.content));
+  }
+
+  /** Leaves the team a callback note for a call that went nowhere. Never throws; a missing tool is simply skipped. */
+  private async noteStalledCall(): Promise<void> {
+    try {
+      await this.runTool({
+        id: `stalled_${++this.toolCallSeq}`,
+        name: "request_follow_up",
+        arguments: { reason: "callback", note: "The conversation stopped making progress and the agent ended the call. Please call the lead back." },
+      });
+    } catch {
+      // a note for the team must never break the call
+    }
   }
 
   private async recordTurn(speaker: "ai" | "lead", text: string) {

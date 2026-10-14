@@ -24,6 +24,9 @@ export const importBody = z
   .object({ kind: z.enum(["units", "faq"]), csv: z.string().min(1).max(500_000), dryRun: z.boolean().optional() })
   .strict();
 
+/** Brochure / price sheet / FAQ text to turn into a draft of the project's knowledge. */
+export const draftBody = z.object({ text: z.string().trim().min(20).max(20_000) }).strict();
+
 export const membersBody = z.object({ userIds: z.array(z.string().uuid()).max(500) });
 
 export const listQuery = z.object({ includeArchived: z.enum(["true", "false"]).optional() });

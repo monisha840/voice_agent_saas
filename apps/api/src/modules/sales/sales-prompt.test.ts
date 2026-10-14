@@ -39,6 +39,47 @@ describe("the rules every call gets", () => {
   });
 });
 
+describe("who the agent is, and what it does when it cannot help", () => {
+  const p = buildSalesRealEstatePrompt(params, { ...DEFAULT_AGENT_CONFIG });
+
+  it("knows its own name and maker, has no personal life, and answers personal questions once and lightly", () => {
+    expect(p).toContain("Who you are: your name is Priya");
+    expect(p).toContain("which runs you. You have no body, age, family or personal life");
+    expect(p).toContain("Say that you are an AI once");
+  });
+
+  it("stays on this project", () => {
+    expect(p).toContain("What you can talk about: only this project and visiting it");
+  });
+
+  it("has a ladder for details it does not have, so it does not loop", () => {
+    expect(p).toContain("When you do not have a detail");
+    expect(p).toContain("If they ask for it again, or for another detail you do not have: do not repeat what you said.");
+    expect(p).toContain("A third time: offer a callback from the team");
+  });
+
+  it("has a ladder for off-topic and rude callers that ends in a callback offer and a polite close", () => {
+    expect(p).toContain("When the lead goes off the subject or is rude");
+    expect(p).toContain("Second time: say the team can call them");
+    expect(p).toContain("If they are abusive, say once, calmly, that you cannot continue like this, then close politely with end_call.");
+  });
+
+  it("tells it that what it hears is recognised speech, may be someone else, and when to stay silent", () => {
+    expect(p).toContain("What you hear comes from speech recognition");
+    expect(p).toContain("reply with exactly the single word SILENT and nothing else");
+    expect(p).toContain("If you are not sure, treat it as meant for you.");
+  });
+
+  it("never says it is ending the call unless it ends it", () => {
+    expect(p).toContain("Never say that you are ending the call, or say goodbye, unless you call end_call in the same turn.");
+  });
+
+  it("does not nag with an unanswered question or say 'I already told you'", () => {
+    expect(p).toContain("Never say \"I already told you\" or \"I already asked\"");
+    expect(p).toContain("do not join two questions with \"and\"");
+  });
+});
+
 describe("what the CRM already knows", () => {
   it("is named when present, so the agent confirms it instead of asking again", () => {
     const p = buildSalesRealEstatePrompt({ ...params, leadRequirement: "2 BHK", leadBudget: "60 lakhs to 80 lakhs" }, { ...DEFAULT_AGENT_CONFIG });

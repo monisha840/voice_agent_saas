@@ -9,6 +9,7 @@ export const SALES_TOOL_NAMES: readonly string[] = [
   "get_project_price",
   "get_project_configurations",
   "get_project_location",
+  "get_nearby_places",
   "check_visit_slots",
   "book_site_visit",
   "update_lead",

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { detectLanguageSwitchRequest, isFillerOnly, shouldIgnoreUtterance } from "./caller-input.js";
+import { CallerLevelTracker, detectLanguageSwitchRequest, isFillerOnly, isUnexpectedLanguage, looksLikeNoiseTranscript, shouldIgnoreUtterance } from "./caller-input.js";
 
 describe("isFillerOnly", () => {
   it.each(["ஆ", "ம்", "உம்", "ம்.", "ம்ம்", "um", "Hmm...", "uh, hmm", "ஆ ம்"])("%s is filler", (t) => {
@@ -86,3 +86,76 @@ describe("detectLanguageSwitchRequest", () => {
     expect(detectLanguageSwitchRequest("speak in English or in Tamil, whichever")).toBeNull();
   });
 });
+
+describe("text a recogniser makes up from noise", () => {
+  it("the same non-word token over and over is noise, as in the call where the room became '100 rupees' three times", () => {
+    expect(looksLikeNoiseTranscript("₹100 ₹100 ₹100", 1500)).toBe(true);
+    expect(shouldIgnoreUtterance("₹100 ₹100 ₹100", 2000)).toBe(true);
+    expect(looksLikeNoiseTranscript("100 100 100 100", 1500)).toBe(true);
+  });
+
+  it("a number said once, or with words around it, is an answer", () => {
+    expect(looksLikeNoiseTranscript("₹100", 800)).toBe(false);
+    expect(looksLikeNoiseTranscript("100 lakhs", 900)).toBe(false);
+    expect(looksLikeNoiseTranscript("50 60 70", 1500)).toBe(false);
+    expect(shouldIgnoreUtterance("எனக்கு 100 லட்சம் budget", 1500)).toBe(false);
+  });
+
+  it("one word stretched over many seconds is not speech; a short one is", () => {
+    expect(looksLikeNoiseTranscript("சரி", 5000)).toBe(true);
+    expect(looksLikeNoiseTranscript("சரி", 600)).toBe(false);
+    expect(looksLikeNoiseTranscript("நான் நாளைக்கு வரலாமா", 5000)).toBe(false);
+  });
+});
+
+describe("speech in a language this call has not used", () => {
+  it("a short utterance heard as Telugu on a Tamil call is background", () => {
+    expect(isUnexpectedLanguage("te-IN", ["ta-IN", undefined, null], 3)).toBe(true);
+  });
+
+  it("the call's own languages and English/Hindi are never 'unexpected'", () => {
+    expect(isUnexpectedLanguage("ta-IN", ["ta-IN"], 2)).toBe(false);
+    expect(isUnexpectedLanguage("en-IN", ["ta-IN"], 2)).toBe(false);
+    expect(isUnexpectedLanguage("hi-IN", ["ta-IN"], 2)).toBe(false);
+  });
+
+  it("a language the caller asked for is allowed, a long utterance is never dropped on this ground, and unknown is kept", () => {
+    expect(isUnexpectedLanguage("te-IN", ["ta-IN", "te-IN"], 2)).toBe(false);
+    expect(isUnexpectedLanguage("te-IN", ["ta-IN"], 12)).toBe(false);
+    expect(isUnexpectedLanguage(undefined, ["ta-IN"], 2)).toBe(false);
+  });
+});
+
+describe("CallerLevelTracker", () => {
+  it("accepts everything until it knows the caller's level", () => {
+    const t = new CallerLevelTracker();
+    expect(t.isBackground(300)).toBe(false);
+    expect(t.isBackground(4000)).toBe(false);
+  });
+
+  it("then treats a much quieter voice as the room, and keeps the caller's level unchanged by it", () => {
+    const t = new CallerLevelTracker();
+    t.isBackground(3000);
+    t.isBackground(3200);
+    const level = t.callerLevel;
+    expect(t.isBackground(500)).toBe(true);
+    expect(t.callerLevel).toBe(level);
+    expect(t.isBackground(2800)).toBe(false);
+  });
+
+  it("a caller who is only somewhat quieter than before is still the caller", () => {
+    const t = new CallerLevelTracker();
+    t.isBackground(3000);
+    t.isBackground(3000);
+    expect(t.isBackground(1500)).toBe(false);
+  });
+
+  it("unknown or zero levels are never background", () => {
+    const t = new CallerLevelTracker();
+    t.isBackground(3000);
+    t.isBackground(3000);
+    expect(t.isBackground(undefined)).toBe(false);
+    expect(t.isBackground(0)).toBe(false);
+  });
+});
+

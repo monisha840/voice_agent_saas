@@ -60,7 +60,7 @@ describe("tool filtering", () => {
     const rt = await callRuntime.build(ctxA, call);
 
     expect([...rt.effectiveTools].sort()).toEqual([...ALL_TOOL_NAMES].sort());
-    expect(rt.effectiveTools).toHaveLength(10);
+    expect(rt.effectiveTools).toHaveLength(11);
     expect(rt.config.allowedTools).toEqual([]); // the legacy "no restriction" value
     expect(rt.config.promptTemplateKey).toBe("sales_real_estate");
 
@@ -103,14 +103,14 @@ describe("tool filtering", () => {
 
   it("disabling the module for an organization takes effect on the next build and re-enabling restores the tools", async () => {
     const call = await makeCall(A.orgId, { agentId: A.agentId, leadId: A.leadId });
-    expect((await callRuntime.build(ctxA, call)).effectiveTools).toHaveLength(10);
+    expect((await callRuntime.build(ctxA, call)).effectiveTools).toHaveLength(11);
     await db.update(organizationModules).set({ enabled: false }).where(and(eq(organizationModules.organizationId, A.orgId), eq(organizationModules.moduleKey, "sales")));
     try {
       expect((await callRuntime.build(ctxA, call)).effectiveTools).toEqual(["end_call"]);
     } finally {
       await db.update(organizationModules).set({ enabled: true }).where(and(eq(organizationModules.organizationId, A.orgId), eq(organizationModules.moduleKey, "sales")));
     }
-    expect((await callRuntime.build(ctxA, call)).effectiveTools).toHaveLength(10);
+    expect((await callRuntime.build(ctxA, call)).effectiveTools).toHaveLength(11);
   });
 
   it("a generic agent with tools [end_call] never exposes sales tools, even on a lead call", async () => {
@@ -132,7 +132,7 @@ describe("tool filtering", () => {
 
     expect(x.config.agentName).toBe("Priya");
     expect(y.config.agentName).toBe("Zed");
-    expect(x.effectiveTools).toHaveLength(10);
+    expect(x.effectiveTools).toHaveLength(11);
     expect(y.effectiveTools).toEqual(["update_lead", "end_call"]);
     const px = buildSystemPrompt(x.promptParams, x.config);
     const py = buildSystemPrompt(y.promptParams, y.config);
@@ -261,7 +261,7 @@ describe("a lead-less agent bound to a project", () => {
     expect(rt.promptParams.projectName).toBe("CR Bound Project");
     // project-only tools (and the follow-up note for the team) are offered; lead tools are not
     expect([...rt.effectiveTools].sort()).toEqual(
-      ["end_call", "get_project_configurations", "get_project_details", "get_project_location", "get_project_price", "request_follow_up"].sort(),
+      ["end_call", "get_project_configurations", "get_project_details", "get_project_location", "get_nearby_places", "get_project_price", "request_follow_up"].sort(),
     );
     for (const t of ["update_lead", "mark_not_interested", "check_visit_slots", "book_site_visit"]) expect(rt.effectiveTools).not.toContain(t);
   });

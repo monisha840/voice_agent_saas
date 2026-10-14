@@ -44,6 +44,9 @@ export class TurnMetrics {
   sttPartials?: number;
   /** Streaming STT: the final transcript was empty (no recognisable speech). */
   sttEmpty?: boolean;
+  /** Audio levels of this turn's utterance (RMS 0..32768): the room's noise floor and the caller's voiced level. Numbers only. */
+  noiseFloor?: number;
+  voicedRms?: number;
   /** Which STT provider produced this turn's transcript (benchmark label). */
   sttProvider?: string;
   /** Provider failure category when the turn failed (timeout, network, auth, ...). */
@@ -104,6 +107,8 @@ export class TurnMetrics {
       sttProvider: this.sttProvider,
       droppedUtterances: this.droppedUtterances || undefined,
       userSpeechMs: this.span("speechStart", "speechEnd"),
+      noiseFloor: this.noiseFloor !== undefined ? Math.round(this.noiseFloor) : undefined,
+      voicedRms: this.voicedRms !== undefined ? Math.round(this.voicedRms) : undefined,
       sttMs: this.span("sttStart", "sttEnd"),
       speechEndToSttEndMs: this.span("speechEnd", "sttEnd"),
       sttPartials: this.sttPartials,

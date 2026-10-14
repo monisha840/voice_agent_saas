@@ -177,6 +177,42 @@ async function seedProjectKnowledge(organizationId: string, projectId: string) {
       category: "maintenance" as const,
       content: { chargesPerSqftPerMonth: 3.5, currency: "INR", notes: "Approximate charges." },
     },
+    // What callers ask beyond price and size (demo data; the structure is what matters).
+    {
+      organizationId,
+      projectId,
+      category: "nearby" as const,
+      content: {
+        items: [
+          { name: "ITPL (International Tech Park)", type: "it_park", distanceKm: 3, travelMinutes: 10 },
+          { name: "Whitefield railway station", type: "railway", distanceKm: 5, travelMinutes: 15 },
+          { name: "Whitefield metro station", type: "metro", distanceKm: 4, travelMinutes: 12 },
+          { name: "Phoenix Marketcity", type: "mall", distanceKm: 6, travelMinutes: 20 },
+          { name: "Columbia Asia Hospital", type: "hospital", distanceKm: 3.5, travelMinutes: 12 },
+          { name: "Delhi Public School", type: "school", distanceKm: 2, travelMinutes: 8 },
+          { name: "Outer Ring Road", type: "highway", distanceKm: 2.5, travelMinutes: 8 },
+          { name: "Kempegowda International Airport", type: "airport", distanceKm: 38, travelMinutes: 60 },
+        ],
+      },
+    },
+    {
+      organizationId,
+      projectId,
+      category: "approvals" as const,
+      content: { items: [{ authority: "BBMP", notes: "Approved building plan" }, { authority: "RERA Karnataka", number: "Registered" }] },
+    },
+    {
+      organizationId,
+      projectId,
+      category: "builder" as const,
+      content: { name: "Green Valley Developers", yearsInBusiness: 15, completedProjects: 12 },
+    },
+    {
+      organizationId,
+      projectId,
+      category: "about" as const,
+      content: { text: "Green Valley Residency is a gated community of 2 and 3 BHK homes in Whitefield, close to the IT corridor, with a clubhouse, pool and gym." },
+    },
   ];
 
   await db.insert(projectKnowledge).values(knowledgeRows);

@@ -37,3 +37,22 @@ describe("QuestionLimiter", () => {
     expect(lim.filter("I will note that.")).toEqual({ text: "I will note that.", dropped: false });
   });
 });
+
+describe("QuestionLimiter with questions already asked", () => {
+  const asked = ["When are you planning to buy, and will you need a home loan?"];
+
+  it("drops the same question asked again, keeps the answer around it", () => {
+    const r = new QuestionLimiter(asked).filter("I am an AI assistant. When are you planning to buy, and will you need a home loan?");
+    expect(r).toEqual({ text: "I am an AI assistant.", dropped: true });
+  });
+
+  it("keeps a different question, and a similar-looking one that asks something else", () => {
+    expect(new QuestionLimiter(asked).filter("Would you like to visit the site on Saturday?").dropped).toBe(false);
+    expect(new QuestionLimiter(["Do you need a loan?"]).filter("Do you need a visit?").dropped).toBe(false); // too short to judge
+  });
+
+  it("does nothing when nothing was asked before", () => {
+    expect(new QuestionLimiter().filter("When are you planning to buy, and will you need a home loan?").dropped).toBe(false);
+  });
+});
+
