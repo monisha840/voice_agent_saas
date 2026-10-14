@@ -42,7 +42,7 @@ import { callRuntime } from "../modules/calls/call-runtime.js";
 import { detectReplyLanguage, replyLanguageName } from "../modules/ai-agent/reply-language.js";
 import { reviewReply } from "../modules/ai-agent/reply-quality.js";
 import { collapseRepetition } from "../modules/ai-agent/stt-text.js";
-import { CallerLevelTracker, detectLanguageSwitchRequest, isUnexpectedLanguage, shouldIgnoreUtterance, wordCount } from "../modules/ai-agent/caller-input.js";
+import { CallerLevelTracker, detectLanguageSwitchRequest, isCallerGoodbye, isUnexpectedLanguage, shouldIgnoreUtterance, wordCount } from "../modules/ai-agent/caller-input.js";
 import { chunkPcmForExotel, pcm16ToWav, pcmDurationMs, ttsAudioToPcm } from "../audio/pcm.js";
 import { TurnDetector } from "../audio/turn-detector.js";
 import { getConfig } from "../config/env.js";
@@ -124,6 +124,14 @@ export function handleExotelMediaStream(socket: WebSocket, hints: MediaStreamHin
   let replyInCallerLanguage = false;
   /** A language the caller explicitly asked for ("speak in English"). Sticky for the rest of the call. */
   let requestedLanguage: string | null = null;
+  /**
+   * Set while the agent has decided to end the call but the line is still open, listening: the caller may be about to
+   * add something. If they speak it is cleared and the conversation goes on; if the wait passes in silence the goodbye
+   * is said and the call ends.
+   */
+  let closingTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The caller's latest words, to see whether they are saying goodbye themselves. */
+  let lastCallerText = "";
   /** How loud the caller is, learned over the call: a much quieter voice is the room, not them. */
   const callerLevel = new CallerLevelTracker();
   /** Aborted when the call ends, so an in-flight STT / LLM / TTS request stops instead of finishing for nobody. */
@@ -402,6 +410,8 @@ export function handleExotelMediaStream(socket: WebSocket, hints: MediaStreamHin
       : replyInCallerLanguage
         ? replyLanguageName(ttsLanguageCode ?? "en-IN")
         : undefined;
+    lastCallerText = text;
+    cancelClosing();
     turn.metrics.mark("llmStart");
     let bookedThisTurn = false;
     let result: ConversationTurnResult;
@@ -433,11 +443,51 @@ export function handleExotelMediaStream(socket: WebSocket, hints: MediaStreamHin
       if (review.flags.length > 0) logger.warn("media-stream: reply quality", fields);
       else logger.info("media-stream: reply quality", fields);
     }
-    // A caller who interrupted the goodbye wants to keep talking: the model's end_call is not carried out.
+    // The agent has decided the call is over. It does not hang up yet: the line stays open and listening for a while in
+    // case the caller was about to add something (or was cut off mid-sentence). Silence ends it with a goodbye.
     if (result.shouldEndCall && !turn.signal.aborted) {
-      turn.metrics.outcome ??= "completed"; // ending the call aborts this very turn; it still finished
-      endSession("ai_ended_call");
+      turn.metrics.outcome ??= "completed";
+      beginClosing(isCallerGoodbye(lastCallerText));
     }
+  }
+
+  /** Starts the listening window before an agent-ended call hangs up. */
+  function beginClosing(callerSaidGoodbye: boolean) {
+    const { closingGraceMs, closingGraceAfterGoodbyeMs } = getConfig().limits;
+    const waitMs = callerSaidGoodbye ? closingGraceAfterGoodbyeMs : closingGraceMs;
+    if (waitMs <= 0) {
+      endSession("ai_ended_call");
+      return;
+    }
+    if (closingTimer) clearTimeout(closingTimer);
+    // The silence guard must not speak "are you still there?" inside this window: the agent already decided to finish.
+    guard?.disarmSilence();
+    logger.info("media-stream: closing window opened", { ...logCtx(), waitMs, callerSaidGoodbye });
+    const finish = async () => {
+      closingTimer = null;
+      if (closed || ending) return;
+      // The caller is speaking, or a turn is in flight: give them a few more seconds rather than cut across them.
+      if (controller && !controller.isIdle) {
+        closingTimer = setTimeout(() => void finish(), 3_000);
+        closingTimer.unref?.();
+        return;
+      }
+      ending = true;
+      controller?.dropPending();
+      await controller?.runAiTurn((t) => speak(fixedLine("goodbye", ttsLanguageCode), t));
+      endSession("ai_ended_call");
+    };
+    closingTimer = setTimeout(() => void finish(), waitMs);
+    closingTimer.unref?.();
+  }
+
+  /** The caller said something real while the closing window was open: the call is not ending after all. */
+  function cancelClosing() {
+    if (!closingTimer) return;
+    clearTimeout(closingTimer);
+    closingTimer = null;
+    session?.noteCallContinues();
+    logger.info("media-stream: the caller spoke again; the call is not ending", logCtx());
   }
 
   /** The guard (silence or length limit) decided the call must end: one polite line, then hang up. */
@@ -481,6 +531,8 @@ export function handleExotelMediaStream(socket: WebSocket, hints: MediaStreamHin
       }
     }
     closed = true;
+    if (closingTimer) clearTimeout(closingTimer);
+    closingTimer = null;
     abort.abort(); // stop any provider request still running for this call
     finishCall(reason === "init_failed" ? "failed" : "completed");
     controller?.close();
@@ -631,7 +683,8 @@ export function handleExotelMediaStream(socket: WebSocket, hints: MediaStreamHin
       onUserActivity: () => guard?.heardCustomer(),
       // Waiting on the customer again (unless the call is over).
       onIdle: () => {
-        if (!closed && !ending) guard?.armSilence();
+        // While the closing window is open the silence guard stays quiet: the window is the wait.
+        if (!closed && !ending && !closingTimer) guard?.armSilence();
       },
       describeError: providerErrorFields,
     });
@@ -726,6 +779,8 @@ export function handleExotelMediaStream(socket: WebSocket, hints: MediaStreamHin
   socket.on("close", () => {
     finishCall("completed"); // the stream dropped without a stop event: the call is over all the same
     closed = true;
+    if (closingTimer) clearTimeout(closingTimer);
+    closingTimer = null;
     abort.abort();
     controller?.close();
     sttStream?.close();

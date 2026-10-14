@@ -133,6 +133,13 @@ export interface AppConfig {
     silenceTimeoutMs: number;
     /** How many "are you still there?" prompts before ending a silent call. */
     silenceReprompts: number;
+    /**
+     * After the agent decides to end the call the line stays open this long, listening, before it says goodbye and hangs
+     * up: the caller may be about to add something. 0 = end at once.
+     */
+    closingGraceMs: number;
+    /** The same wait when the caller has just said goodbye themselves (a short beat, not a minute). */
+    closingGraceAfterGoodbyeMs: number;
   };
   /**
    * Reliability of calls to AI providers (STT / LLM / TTS), applied uniformly by adapters/ai/reliability.ts. Retries
@@ -284,7 +291,8 @@ export function getConfig(): AppConfig {
       "mock",
     ),
     turn: {
-      endSilenceMs: Number(process.env.TURN_END_SILENCE_MS ?? 700),
+      // 900 ms: a person pausing mid-sentence ("no, I have no interest in...") must not be taken as finished.
+      endSilenceMs: Number(process.env.TURN_END_SILENCE_MS ?? 900),
       energyThreshold: Number(process.env.TURN_ENERGY_THRESHOLD ?? 500),
       // 400 ms: a cough, a click or a word from across the room is shorter than a real answer.
       minSpeechMs: Number(process.env.TURN_MIN_SPEECH_MS ?? 400),
@@ -340,6 +348,8 @@ export function getConfig(): AppConfig {
       maxCallDurationMs: intEnv("MAX_CALL_DURATION_MS", 30 * 60_000),
       silenceTimeoutMs: intEnv("SILENCE_TIMEOUT_MS", 20_000),
       silenceReprompts: intEnv("SILENCE_REPROMPTS", 1),
+      closingGraceMs: intEnv("CLOSING_GRACE_MS", 60_000),
+      closingGraceAfterGoodbyeMs: intEnv("CLOSING_GRACE_AFTER_GOODBYE_MS", 2_000),
     },
     providers: {
       sttTimeoutMs: Math.max(1, intEnv("PROVIDER_STT_TIMEOUT_MS", 10_000)),

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { CallerLevelTracker, detectLanguageSwitchRequest, isFillerOnly, isUnexpectedLanguage, looksLikeNoiseTranscript, shouldIgnoreUtterance } from "./caller-input.js";
+import { CallerLevelTracker, detectLanguageSwitchRequest, isCallerGoodbye, isFillerOnly, isUnexpectedLanguage, looksLikeNoiseTranscript, shouldIgnoreUtterance } from "./caller-input.js";
 
 describe("isFillerOnly", () => {
   it.each(["ஆ", "ம்", "உம்", "ம்.", "ம்ம்", "um", "Hmm...", "uh, hmm", "ஆ ம்"])("%s is filler", (t) => {
@@ -159,3 +159,13 @@ describe("CallerLevelTracker", () => {
   });
 });
 
+
+describe("isCallerGoodbye", () => {
+  it.each(["ok thanks bye", "Thank you, bye", "bye", "நன்றி", "சரி போதும்", "அவ்வளவுதான் நன்றி bye", "धन्यवाद", "that's all"])("%s", (t) => {
+    expect(isCallerGoodbye(t)).toBe(true);
+  });
+
+  it.each(["thanks, and what is the price of a 3 BHK", "இல்லை நான் எந்த interest-உம்", "what about the second floor", "", "ஆமாம்"])("not a goodbye: %s", (t) => {
+    expect(isCallerGoodbye(t)).toBe(false);
+  });
+});

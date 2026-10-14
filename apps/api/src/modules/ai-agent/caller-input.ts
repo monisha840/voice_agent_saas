@@ -166,3 +166,21 @@ export class CallerLevelTracker {
     return this.level;
   }
 }
+
+/** Phrases a caller uses to finish the call themselves (English, Tamil, Hindi). Matched in a SHORT utterance only. */
+const GOODBYE_PHRASES = [
+  "bye", "goodbye", "good bye", "thank you", "thanks", "that's all", "that is all", "nothing else", "no thanks",
+  "நன்றி", "போதும்", "அவ்வளவுதான்", "அவ்ளோதான்", "வச்சிடுறேன்", "வைக்கிறேன்", "பை",
+  "धन्यवाद", "शुक्रिया", "बस", "अलविदा", "बाय",
+];
+
+/**
+ * True when the caller is closing the conversation themselves ("ok thanks, bye", "நன்றி, bye", "அவ்வளவுதான்"). Only a
+ * short utterance counts: "thanks, and what is the price of 3 BHK" is a question, not a goodbye.
+ */
+export function isCallerGoodbye(text: string): boolean {
+  const w = words(text);
+  if (w.length === 0 || w.length > 6) return false;
+  const lower = text.toLowerCase();
+  return GOODBYE_PHRASES.some((p) => lower.includes(p));
+}

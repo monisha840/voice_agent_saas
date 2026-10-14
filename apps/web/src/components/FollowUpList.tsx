@@ -12,6 +12,7 @@ const KIND: Record<FollowUpKind, { label: string; tone: "warn" | "info" | "error
   callback: { label: "Call back", tone: "info" },
   info_requested: { label: "Needs information", tone: "neutral" },
   do_not_call: { label: "Do not call", tone: "error" },
+  preference: { label: "Wants something else", tone: "info" },
 };
 
 /** A follow-up, optionally with who it concerns (the team queue shows that; a lead's own page does not need it). */

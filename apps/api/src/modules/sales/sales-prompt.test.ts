@@ -71,7 +71,8 @@ describe("who the agent is, and what it does when it cannot help", () => {
   });
 
   it("never says it is ending the call unless it ends it", () => {
-    expect(p).toContain("Never say that you are ending the call, or say goodbye, unless you call end_call in the same turn.");
+    expect(p).toContain("Never say that you are ending the call unless you call end_call in the same turn.");
+    expect(p).toContain("Do not say goodbye or bye yourself: the line stays open for a short while");
   });
 
   it("does not nag with an unanswered question or say 'I already told you'", () => {
@@ -118,5 +119,28 @@ describe("speaking another language", () => {
   it("adds nothing for English", () => {
     const p = buildSalesRealEstatePrompt(params, { ...DEFAULT_AGENT_CONFIG, language: "en-IN" });
     expect(p).not.toContain("casual, everyday");
+  });
+});
+
+describe("what it does with unclear speech, other wishes and the end of the call", () => {
+  const p = buildSalesRealEstatePrompt(params, { ...DEFAULT_AGENT_CONFIG });
+
+  it("does not treat a garbled message as off-topic, a refusal, or a guess", () => {
+    expect(p).toContain("A message that is garbled, a fragment, or does not fit what was just said is NOT an off-topic question and NOT a refusal");
+    expect(p).toContain("Place names in particular are often misheard");
+  });
+
+  it("never ends the call on a request it did not understand or a half sentence", () => {
+    expect(p).toContain("Never end the call on a request you did not understand, on a fragment, or on a half-finished sentence");
+  });
+
+  it("records what else the lead wants (another area, other projects, a visit with no slot) instead of refusing", () => {
+    expect(p).toContain("call request_follow_up with reason preference");
+    expect(p).toContain("Never answer a question about the company by describing only this project.");
+    expect(p).toContain("A visit time with no slot");
+  });
+
+  it("does not push the visit in every reply", () => {
+    expect(p).toContain("at most once in any three replies, and never in the same reply as another question");
   });
 });

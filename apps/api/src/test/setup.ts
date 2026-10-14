@@ -31,3 +31,6 @@ process.env.QUOTA_CALLS_PER_ORG_PER_DAY = "10000000";
 process.env.QUOTA_CALL_SECONDS_PER_ORG_PER_MONTH = "0";
 process.env.MAX_CALL_DURATION_MS = "0";
 process.env.SILENCE_TIMEOUT_MS = "0";
+// The wait before an agent-ended call hangs up is a production default; tests end calls at once unless they test it.
+process.env.CLOSING_GRACE_MS = "0";
+process.env.CLOSING_GRACE_AFTER_GOODBYE_MS = "0";

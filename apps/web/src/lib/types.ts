@@ -140,7 +140,7 @@ export interface SiteVisit {
   createdAt: string;
 }
 
-export type FollowUpKind = "human_requested" | "callback" | "info_requested" | "do_not_call";
+export type FollowUpKind = "human_requested" | "callback" | "info_requested" | "do_not_call" | "preference";
 
 /** Something the team must do after a call, noted by the agent (a human was asked for, a callback, a question to answer). */
 export interface FollowUp {

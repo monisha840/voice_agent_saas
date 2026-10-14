@@ -6,7 +6,9 @@
 type LineSet = {
   /** The model never produced words for this turn. */
   fallback: string;
-  /** The call is ending (end_call ran) and the model said no closing words. */
+  /** The call is ending (end_call ran) and the model said no closing words: a plain acknowledgement, no goodbye yet. */
+  noted: string;
+  /** Spoken at the very end, after the line has stayed open without the caller adding anything. */
   goodbye: string;
   /** The model's request failed: ask the caller to say it again instead of going silent. */
   retry: string;
@@ -21,6 +23,7 @@ type LineSet = {
 const LINES: Record<string, LineSet> = {
   "en-IN": {
     fallback: "Sorry, let me have a colleague follow up with you on that.",
+    noted: "Alright, I have noted that.",
     goodbye: "Thank you for your time. Goodbye.",
     retry: "Sorry, I didn't catch that. Could you say it once more?",
     reprompt: "Hello, are you still there?",
@@ -29,6 +32,7 @@ const LINES: Record<string, LineSet> = {
   },
   "ta-IN": {
     fallback: "மன்னிக்கவும், இதைப் பற்றி எங்க டீம்ல ஒருத்தர் உங்களுக்கு கால் பண்ணுவாங்க.",
+    noted: "சரி, note பண்ணிக்கிறேன்.",
     goodbye: "உங்க நேரத்துக்கு நன்றி. வணக்கம்.",
     retry: "சாரி, சரியா கேக்கல. ஒரு தடவை திரும்பச் சொல்லுங்களேன்?",
     reprompt: "ஹலோ, லைன்ல இருக்கீங்களா?",
@@ -37,6 +41,7 @@ const LINES: Record<string, LineSet> = {
   },
   "hi-IN": {
     fallback: "माफ़ कीजिए, इस बारे में हमारी टीम का एक सदस्य आपसे संपर्क करेगा।",
+    noted: "ठीक है, मैंने नोट कर लिया है।",
     goodbye: "आपके समय के लिए धन्यवाद। नमस्ते।",
     retry: "माफ़ कीजिए, ठीक से सुनाई नहीं दिया। एक बार फिर बता दीजिए?",
     reprompt: "हैलो, क्या आप लाइन पर हैं?",

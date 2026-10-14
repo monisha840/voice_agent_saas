@@ -76,12 +76,12 @@ describe("a call that is ending is never left in silence", () => {
     expect(r).toMatchObject({ spokenText: "Noted, I will arrange a call tomorrow at 5. Goodbye!", shouldEndCall: true });
   });
 
-  it("falls back to a fixed goodbye in the call's language", async () => {
+  it("falls back to a plain acknowledgement in the call's language: the goodbye is said only after the line has stayed quiet", async () => {
     const { llm } = strictScripted([{ toolCalls: [{ id: "e1", name: "end_call", arguments: {} }] }, { content: "  " }]);
     const session = new ConversationSession(llm, toolCtx, {}, undefined);
     const r = await session.handleUserUtterance("சரி bye", { replyLanguage: "Tamil" });
     expect(r.shouldEndCall).toBe(true);
-    expect(r.spokenText).toBe(fixedLine("goodbye", "ta-IN"));
+    expect(r.spokenText).toBe(fixedLine("noted", "ta-IN"));
     expect(r.spokenText).toMatch(/[஀-௿]/);
   });
 });

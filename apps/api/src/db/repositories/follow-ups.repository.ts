@@ -4,7 +4,7 @@ import { calls, followUps, leads } from "../schema.js";
 import { scopeCondition } from "./leads.repository.js";
 import type { LeadScope } from "../../auth/scope.js";
 
-export const FOLLOW_UP_KINDS = ["human_requested", "callback", "info_requested", "do_not_call"] as const;
+export const FOLLOW_UP_KINDS = ["human_requested", "callback", "info_requested", "do_not_call", "preference"] as const;
 export type FollowUpKind = (typeof FOLLOW_UP_KINDS)[number];
 
 /** Every method requires an organizationId and filters by it. */

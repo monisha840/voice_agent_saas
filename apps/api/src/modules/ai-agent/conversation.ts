@@ -156,6 +156,8 @@ export class ConversationSession {
   private recentReplies: string[] = [];
   /** Replies in a row that repeated one of the last few. */
   private repeatStreak = 0;
+  /** The call was about to end and the caller spoke again: the next request says so, once. */
+  private resumedAfterClosing = false;
   /** Caller utterances in a row that the model chose not to answer. */
   private silentStreak = 0;
 
@@ -168,6 +170,14 @@ export class ConversationSession {
     private readonly options: ConversationSessionOptions = {},
   ) {
     this.messages.push({ role: "system", content: buildSystemPrompt(params, agent) });
+  }
+
+  /**
+   * The agent had decided to end the call and the caller said something more, so the call goes on. The model's history
+   * still shows end_call; the next request tells it the call is not ending.
+   */
+  noteCallContinues(): void {
+    this.resumedAfterClosing = true;
   }
 
   /** Call once, before the first user utterance, to get the AI's opening line. */
@@ -383,6 +393,13 @@ export class ConversationSession {
         : `The caller is speaking ${language}. Write your reply to the caller in ${language}.`;
       out.push({ role: "system", content });
     }
+    if (this.resumedAfterClosing && !closing) {
+      out.push({
+        role: "system",
+        content:
+          "The call was about to end but the caller has spoken again, so it is NOT ending. Answer what they said. Do not say goodbye unless they are finished, and do not say you had ended the call.",
+      });
+    }
     if (!closing && this.repeatStreak >= REPEAT_NOTE_AT) out.push({ role: "system", content: REPEAT_NOTE });
     // Once end_call has run, a model that sees it in the history takes the conversation as finished and says nothing;
     // it is told plainly that the reply is still wanted, and what it must contain.
@@ -390,7 +407,7 @@ export class ConversationSession {
       out.push({
         role: "system",
         content:
-          "The call is ending now. Reply to the caller in words: say what was just done for them (for example the day and time of a booked visit, or that a team member will call them) and a brief goodbye. Do not call any tool.",
+          "The call is about to end. Reply to the caller in words: say what was just done for them (for example the day and time of a booked visit, or that a team member will call them). Do not say goodbye, bye or thank you for your time: the line stays open a little longer in case the caller has more to say, and the goodbye is said afterwards. Do not call any tool.",
       });
     }
     return out;
@@ -464,7 +481,8 @@ export class ConversationSession {
         reply = fixedLine("retry", opts?.replyLanguage ?? this.agent?.language);
       }
       this.silentStreak = 0;
-      if (shouldEndCall && !reply.trim()) reply = endCallMessage ?? fixedLine("goodbye", opts?.replyLanguage ?? this.agent?.language);
+      this.resumedAfterClosing = false;
+      if (shouldEndCall && !reply.trim()) reply = endCallMessage ?? fixedLine("noted", opts?.replyLanguage ?? this.agent?.language);
       let limited = new QuestionLimiter(this.recentQuestions()).filter(reply);
       // If dropping a repeated question would leave nothing to say, the repeat is better than silence.
       if (!limited.text.trim() && reply.trim()) limited = new QuestionLimiter().filter(reply);

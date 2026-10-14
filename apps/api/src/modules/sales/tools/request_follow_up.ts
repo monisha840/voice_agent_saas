@@ -28,7 +28,7 @@ export const requestFollowUp: AiTool<Args> = {
   definition: {
     name: "request_follow_up",
     description:
-      "Tell the sales team something they must do after this call. reason is one of: human_requested (the lead asked to speak to a person, human, manager or sales executive), callback (the lead is busy right now and asked YOU to call them later or at a particular time; never use it when they ask about visiting or propose a time to visit), info_requested (the lead asked for something you could not give, e.g. a document or a detail that is not in the project data), do_not_call (the lead asked not to be called again). Put what the lead said in note, briefly. Only give callbackTime when the lead named a specific time.",
+      "Tell the sales team something they must do after this call. reason is one of: human_requested (the lead asked to speak to a person, human, manager or sales executive), callback (the lead is busy right now and asked YOU to call them later or at a particular time; never use it when they ask about visiting or propose a time to visit), info_requested (the lead asked for something you could not give, e.g. a document or a detail that is not in the project data), do_not_call (the lead asked not to be called again), preference (the lead wants something this project does not have: another area, another project, a different size or budget, a visit on a day or month with no slots; put exactly what they want in note). Put what the lead said in note, briefly. Only give callbackTime when the lead named a specific time.",
     parameters: {
       type: "object",
       properties: {
