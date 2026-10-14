@@ -174,6 +174,9 @@ export function createApi(getExtraHeaders: HeaderProvider = () => ({})) {
       send<unknown>("DELETE", `/api/agents/${id}/phone-numbers/${numberId}`),
     listTools: () => request<ToolInfo[]>("/api/tools"),
     // The calls list returns top-level data + nextBefore, so it bypasses the data-unwrapping helper.
+    /** Plays a short sample in a voice. A voice name the provider does not know is an error (no silent fallback). */
+    previewVoice: (voice: string, language?: string) =>
+      send<{ voice: string; languageCode: string; audioBase64: string; format: string }>("POST", "/api/agents/voice-preview", { voice, ...(language ? { language } : {}) }),
     listCalls: async (opts: {
         limit?: number;
         before?: string | null;

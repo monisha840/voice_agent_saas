@@ -6,7 +6,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { ConversationSession, alreadySaidNote } from "./conversation.js";
 import { fixedLine } from "./fallback-lines.js";
 import type { ChatMessage, ChatResult, ILanguageModel, ToolDefinition } from "../../adapters/ai/llm.interface.js";
-import { callsRepository } from "../../db/repositories/calls.repository.js";
+import { callsRepository } from "../../test/repos.js";
 import { cleanupTenants, createTenant } from "../../test/tenants.js";
 import type { ToolExecutionContext } from "../../ai-tools/types.js";
 
@@ -130,7 +130,7 @@ describe("the reminder of what was already said", () => {
 });
 
 describe("going round in circles", () => {
-  const SAME = "I am an AI assistant, would you like to see the visit slots for this Saturday?";
+  const SAME = "I am an AI assistant, would you like to hear about the amenities of this project?";
 
   it("a repeated reply makes the next request carry a note to change tack", async () => {
     const { llm, requests } = strictScripted([{ content: SAME }, { content: SAME }, { content: "Okay, the 2 BHK is 65 to 78 lakhs." }]);
@@ -265,3 +265,69 @@ describe("a question the caller did not answer is not asked again word for word"
   });
 });
 
+
+describe("what the agent is not allowed to say", () => {
+  const VISIT = "Shall I schedule a site visit for you this Saturday?";
+
+  it("a site-visit offer made a moment ago is not made again, and the answer is kept", async () => {
+    const { llm } = strictScripted([
+      { content: `Hello, this is Priya. ${VISIT}` },
+      { content: `We have a gym and a pool. ${VISIT}` },
+      { content: `There is a clubhouse as well. ${VISIT}` },
+    ]);
+    const session = new ConversationSession(llm, toolCtx, {}, undefined);
+    await session.start();
+    const second = await session.handleUserUtterance("what amenities are there");
+    expect(second.spokenText).toBe("We have a gym and a pool.");
+    const third = await session.handleUserUtterance("anything else");
+    expect(third.spokenText).toBe("There is a clubhouse as well.");
+  });
+
+  it("when only the offer was in the reply, something neutral is said instead of repeating it", async () => {
+    const { llm } = strictScripted([{ content: VISIT }, { content: VISIT }]);
+    const session = new ConversationSession(llm, toolCtx, {}, undefined);
+    await session.start();
+    const r = await session.handleUserUtterance("hmm");
+    expect(r.spokenText).toBe(fixedLine("more", "en-IN"));
+  });
+
+  it("a caller who asks about visiting is answered, offer and all", async () => {
+    const { llm } = strictScripted([{ content: VISIT }, { content: "Yes, I can book that. Which slot suits you, Saturday morning?" }]);
+    const session = new ConversationSession(llm, toolCtx, {}, undefined);
+    await session.start();
+    const r = await session.handleUserUtterance("when can I visit the site");
+    expect(r.spokenText).toContain("Which slot suits you");
+  });
+
+  it("a price that no tool returned is not spoken or stored, and the team is told", async () => {
+    const { llm } = strictScripted([{ content: "The 2 BHK is 55 lakhs. It has a gym." }]);
+    const session = new ConversationSession(llm, toolCtx, {}, undefined);
+    const r = await session.handleUserUtterance("what is the price");
+    expect(r.spokenText).toBe("It has a gym.");
+  });
+
+  it("when the whole reply was an unverified figure, a safe line is said instead", async () => {
+    const { llm } = strictScripted([{ content: "The 2 BHK is 55 lakhs." }]);
+    const session = new ConversationSession(llm, toolCtx, {}, undefined);
+    const r = await session.handleUserUtterance("what is the price");
+    expect(r.spokenText).toBe(fixedLine("verify", "en-IN"));
+  });
+
+  it("a figure from a tool result, in other units, is spoken", async () => {
+    const { llm } = strictScripted([
+      { toolCalls: [{ id: "p", name: "get_project_price", arguments: { configuration: "2 BHK" } }] },
+      { content: "The 2 BHK is 65 to 78 lakhs." },
+    ]);
+    const session = new ConversationSession(llm, toolCtx, {}, undefined);
+    const r = await session.handleUserUtterance("price of 2 BHK");
+    // The scripted tool has no project on this call, so it returns an error and no figure: the quoted price is withheld.
+    expect(r.spokenText).toBe(fixedLine("verify", "en-IN"));
+  });
+
+  it("figures the caller said are not withheld when the agent repeats them back", async () => {
+    const { llm } = strictScripted([{ content: "So your budget is 80 lakhs, noted." }]);
+    const session = new ConversationSession(llm, toolCtx, {}, undefined);
+    const r = await session.handleUserUtterance("my budget is 80 lakhs");
+    expect(r.spokenText).toBe("So your budget is 80 lakhs, noted.");
+  });
+});

@@ -21,6 +21,7 @@ import type { ILanguageModel, ChatMessage, ChatResult, ToolCallRequest, ToolDefi
 import { SentenceChunker } from "./text-chunker.js";
 import { getToolDefinitions, executeTool, END_CALL_TOOL_NAME } from "../../ai-tools/index.js";
 import type { ToolExecutionContext } from "../../ai-tools/index.js";
+import { runInTenant } from "../../db/tenant-context.js";
 import { conversationsRepository } from "../../db/repositories/conversations.repository.js";
 import { buildSystemPrompt, type PromptParams } from "./persona.js";
 import type { ResolvedAgentConfig } from "../agent-config/agent-config.types.js";
@@ -29,6 +30,7 @@ import { getConfig } from "../../config/env.js";
 import { fallbackLine, fixedLine } from "./fallback-lines.js";
 import { QuestionLimiter, questionsIn } from "./one-question.js";
 import { announcesEndOfCall, isRepeat } from "./loop-guard.js";
+import { ReplyGuard, callerAskedAboutVisit, numbersIn, replyOffersVisit } from "./reply-guard.js";
 
 export interface ConversationTurnResult {
   /** The spoken text to synthesize via TTS and play to the lead. */
@@ -156,6 +158,8 @@ export class ConversationSession {
   private recentReplies: string[] = [];
   /** Replies in a row that repeated one of the last few. */
   private repeatStreak = 0;
+  /** What the reply guard removed during the current turn (reset at the start of each turn). */
+  private guardLog = { ungrounded: [] as string[], visitOfferRemoved: false, visitToolRan: false };
   /** The call was about to end and the caller spoke again: the next request says so, once. */
   private resumedAfterClosing = false;
   /** Caller utterances in a row that the model chose not to answer. */
@@ -182,24 +186,29 @@ export class ConversationSession {
 
   /** Call once, before the first user utterance, to get the AI's opening line. */
   async start(opts?: TurnOptions): Promise<ConversationTurnResult> {
-    this.messages.push({
-      role: "user",
-      content: "[Call connected. Begin the conversation with your introduction.]",
+    // The call (and so the organization) was fixed when the session was built; every statement of a turn runs in it.
+    return runInTenant({ organizationId: this.toolCtx.organizationId }, async () => {
+      this.messages.push({
+        role: "user",
+        content: "[Call connected. Begin the conversation with your introduction.]",
+      });
+      return this.runTurn(opts);
     });
-    return this.runTurn(opts);
   }
 
   /** Call with each new transcribed lead utterance. */
   async handleUserUtterance(text: string, opts?: TurnOptions): Promise<ConversationTurnResult> {
-    await this.recordTurn("lead", text);
-    const undo = this.pushUserMessage(text);
-    const result = await this.runTurn(opts);
-    if (result.silent) {
-      // Not addressed to the agent: it is not part of the conversation, in the model's history or in the record.
-      undo();
-      await conversationsRepository.removeLastTurnIf({ organizationId: this.toolCtx.organizationId, callId: this.toolCtx.callId, speaker: "lead", text });
-    }
-    return result;
+    return runInTenant({ organizationId: this.toolCtx.organizationId }, async () => {
+      await this.recordTurn("lead", text);
+      const undo = this.pushUserMessage(text);
+      const result = await this.runTurn(opts);
+      if (result.silent) {
+        // Not addressed to the agent: it is not part of the conversation, in the model's history or in the record.
+        undo();
+        await conversationsRepository.removeLastTurnIf({ organizationId: this.toolCtx.organizationId, callId: this.toolCtx.callId, speaker: "lead", text });
+      }
+      return result;
+    });
   }
 
   /**
@@ -320,6 +329,7 @@ export class ConversationSession {
 
     const chunker = new SentenceChunker();
     const questions = new QuestionLimiter(this.recentQuestions());
+    const guard = this.replyGuard();
     const chunks: string[] = [];
     let sawToken = false;
     const emit = (raw: string) => {
@@ -327,7 +337,13 @@ export class ConversationSession {
       // The model chose silence: nothing is spoken.
       if (isSilentReply(raw)) return;
       // One question per reply: later questions are never spoken.
-      const text = questions.filter(raw).text;
+      const afterQuestions = questions.filter(raw).text;
+      if (!afterQuestions) return;
+      // Figures no tool returned and a repeated visit offer are never spoken.
+      const checked = guard.filter(afterQuestions);
+      this.guardLog.ungrounded.push(...checked.ungrounded);
+      this.guardLog.visitOfferRemoved ||= checked.visitOfferRemoved;
+      const text = checked.text;
       if (!text) return;
       if (chunks.length === 0) observer?.onFirstChunk?.(hop);
       chunks.push(text);
@@ -415,6 +431,7 @@ export class ConversationSession {
 
   private async runTurn(opts?: TurnOptions): Promise<ConversationTurnResult> {
     const tools = getToolDefinitions(this.allowedTools());
+    this.guardLog = { ungrounded: [], visitOfferRemoved: false, visitToolRan: false };
     let shouldEndCall = false;
     /** Words the model put inside the end_call request itself (some models say goodbye there instead of in the reply). */
     let endCallMessage: string | null = null;
@@ -452,6 +469,7 @@ export class ConversationSession {
               const said = (call.arguments as { message?: unknown } | null | undefined)?.message;
               if (typeof said === "string" && said.trim()) endCallMessage = said.trim();
             }
+            if (call.name === "check_visit_slots" || call.name === "book_site_visit") this.guardLog.visitToolRan = true;
             toolResult = await this.runTool(call);
             const booked = typeof toolResult === "object" && toolResult !== null && (toolResult as { booked?: unknown }).booked === true;
             try {
@@ -487,7 +505,21 @@ export class ConversationSession {
       // If dropping a repeated question would leave nothing to say, the repeat is better than silence.
       if (!limited.text.trim() && reply.trim()) limited = new QuestionLimiter().filter(reply);
       if (limited.dropped) logger.info("ai-agent: extra questions dropped from the reply", { callId: this.toolCtx.callId });
-      const spokenText = limited.text;
+      // The same checks on the whole reply (what is stored must be what was spoken), and a safe line if nothing is left.
+      const guardedWhole = this.replyGuard().filter(limited.text);
+      this.guardLog.ungrounded.push(...guardedWhole.ungrounded);
+      this.guardLog.visitOfferRemoved ||= guardedWhole.visitOfferRemoved;
+      let spokenText = guardedWhole.text;
+      const language = opts?.replyLanguage ?? this.agent?.language;
+      if (!spokenText.trim() && limited.text.trim()) {
+        spokenText = this.guardLog.ungrounded.length > 0 ? fixedLine("verify", language) : fixedLine("more", language);
+      }
+      if (this.guardLog.ungrounded.length > 0) {
+        const unique = [...new Set(this.guardLog.ungrounded)].slice(0, 4);
+        logger.warn("ai-agent: a figure no tool returned was withheld from the reply", { callId: this.toolCtx.callId, count: unique.length });
+        await this.noteWithheldFigure(unique);
+      }
+      if (this.guardLog.visitOfferRemoved) logger.info("ai-agent: a repeated site-visit offer was removed from the reply", { callId: this.toolCtx.callId });
       // Saying the call is over is not enough to end it: if the reply announces it, the call really ends.
       if (!shouldEndCall && announcesEndOfCall(spokenText)) {
         shouldEndCall = true;
@@ -507,6 +539,37 @@ export class ConversationSession {
     const fallback = fallbackLine(opts?.replyLanguage ?? this.agent?.language);
     await this.recordTurn("ai", fallback);
     return { spokenText: fallback, shouldEndCall: true };
+  }
+
+  /**
+   * The guard for the reply being produced: figures must have been returned by a tool on this call (or said by the caller),
+   * and a site-visit offer is held back when one was made in the last two replies and the caller is not asking about
+   * visiting.
+   */
+  private replyGuard(): ReplyGuard {
+    const grounding: string[] = [];
+    for (const m of this.messages) {
+      if (m.role === "tool" || m.role === "user") grounding.push(m.content);
+      else if (m.role === "system") grounding.push(m.content); // the prompt: the CRM's known requirement/budget, the date
+    }
+    const lastUser = [...this.messages].reverse().find((m) => m.role === "user")?.content ?? "";
+    const recent = this.recentReplies.slice(-2);
+    const suppressVisitOffer =
+      recent.some((r) => replyOffersVisit(r)) && !callerAskedAboutVisit(lastUser) && !this.guardLog.visitToolRan;
+    return new ReplyGuard({ knownNumbers: numbersIn(grounding), suppressVisitOffer });
+  }
+
+  /** Leaves the team a note that the agent was about to state a figure it had no source for. Never throws. */
+  private async noteWithheldFigure(figures: string[]): Promise<void> {
+    try {
+      await this.runTool({
+        id: `withheld_${++this.toolCallSeq}`,
+        name: "request_follow_up",
+        arguments: { reason: "info_requested", note: `The agent was about to state an unverified figure (${figures.join(", ")}) and withheld it. Please confirm the right figure with the lead.` },
+      });
+    } catch {
+      // a note for the team must never break the call
+    }
   }
 
   /** The questions in the agent's last two replies: asking one of them again, word for word, is dropped. */

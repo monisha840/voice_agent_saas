@@ -7,6 +7,7 @@ import { api } from "@/lib/api";
 import type { Agent, AgentInput, Project, PromptTemplateKey, ToolInfo } from "@/lib/types";
 import { Badge, Button, Card, Field, Notice, errorMessage, inputClass } from "@/components/ui";
 import { PhoneNumbersCard } from "./PhoneNumbersCard";
+import { VoicePreview } from "./VoicePreview";
 
 const LANGUAGES: [string, string][] = [
   ["en-IN", "English (India)"],
@@ -446,6 +447,11 @@ export function AgentEditor({
               className={inputClass}
             />
           </Field>
+          <VoicePreview voice={form.voice} language={form.language} />
+          <p className="mt-2 text-xs text-stone-500">
+            With no voice set the agent speaks with the provider&apos;s default voice, which is a male voice (shubh): set a
+            female voice here for a female persona, and press &quot;Hear this voice&quot; to check the name is accepted.
+          </p>
           <p className="mt-2 text-xs text-stone-500">
             Leave empty to use the provider&apos;s default voice. If the provider does not recognise the name, the agent speaks with the
             default voice instead.

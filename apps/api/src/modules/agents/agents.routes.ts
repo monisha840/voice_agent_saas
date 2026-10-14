@@ -3,6 +3,7 @@ import { requireContext } from "../../auth/auth.plugin.js";
 import { parseInput } from "../../shared/validation.js";
 import { agentsService } from "./agents.service.js";
 import { agentIdParamsSchema } from "./agents.validation.js";
+import { voicePreviewService } from "./voice-preview.js";
 
 export async function agentsRoutes(app: FastifyInstance) {
   const idOf = (params: unknown) => parseInput(agentIdParamsSchema, params).id;
@@ -11,6 +12,11 @@ export async function agentsRoutes(app: FastifyInstance) {
   // never be confused with the full, agents:read-gated /api/agents/:id.
   app.get("/api/agent-options", async (req, reply) => {
     return reply.send({ data: await agentsService.listOptions(requireContext(req)) });
+  });
+
+  // Plays a sample in a voice, with no fallback: a speaker name the provider does not know is reported, not hidden.
+  app.post("/api/agents/voice-preview", async (req, reply) => {
+    return reply.send({ data: await voicePreviewService.preview(requireContext(req), req.body) });
   });
 
   app.get("/api/agents", async (req, reply) => {

@@ -13,7 +13,7 @@ import type { AiTool, ToolExecutionContext } from "../../ai-tools/types.js";
 import type { ChatMessage, ChatResult, ILanguageModel, LlmStreamHandlers, ToolCallRequest, ToolDefinition } from "../../adapters/ai/llm.interface.js";
 import type { ProviderCallOptions } from "../../adapters/ai/provider-common.js";
 import { ProviderRequestError } from "../../shared/errors.js";
-import { conversationsRepository } from "../../db/repositories/conversations.repository.js";
+import { conversationsRepository } from "../../test/repos.js";
 import { callsService } from "../calls/calls.service.js";
 import { defaultAgentIdFor } from "../../test/tenants.js";
 import { demoContext } from "../../test/helpers.js";
@@ -146,19 +146,19 @@ describe("streaming reply: chunks, assembly and history", () => {
     const llm = new ScriptedStreamingLlm([{ deltas: ["Opening."] }]);
     llm["script"].push({ deltas: [] });
     llm.chatStream = async (_m, _t, handlers) => {
-      handlers.onTextDelta("The price starts at 70 lakhs. ");
+      handlers.onTextDelta("The price starts at a good value. ");
       await tail; // the model is still "thinking" about the rest
       handlers.onTextDelta("It includes parking.");
-      return { content: "The price starts at 70 lakhs. It includes parking.", finishReason: "stop" };
+      return { content: "The price starts at a good value. It includes parking.", finishReason: "stop" };
     };
     const s = sessionFor(llm);
     const early: string[] = [];
     const done = s.handleUserUtterance("price?", { onTextChunk: (c) => void early.push(c.text) });
     await new Promise((r) => setTimeout(r, 20));
-    expect(early).toEqual(["The price starts at 70 lakhs."]); // delivered before completion
+    expect(early).toEqual(["The price starts at a good value."]); // delivered before completion
     releaseTail();
     const turn = await done;
-    expect(turn.chunks).toEqual(["The price starts at 70 lakhs.", "It includes parking."]);
+    expect(turn.chunks).toEqual(["The price starts at a good value.", "It includes parking."]);
   });
 
   it("history: one user message and exactly one assistant message, written only after completion; transcript likewise", async () => {
@@ -375,9 +375,9 @@ describe("streaming reply: cancellation and failure", () => {
 
 describe("languages (the model sees what the caller said, unmodified)", () => {
   it.each([
-    ["English", "Can you tell me the price for a two bedroom apartment?", "Certainly, I can help. The price starts at 70 lakhs."],
+    ["English", "Can you tell me the price for a two bedroom apartment?", "Certainly, I can help. The price starts at a good value."],
     ["Tamil", "இந்த project-ல இரண்டு BHK விலை எவ்வளவு?", "நிச்சயமாக. விலை 70 லட்சத்தில் தொடங்குகிறது."],
-    ["Tanglish", "Indha project la 2 BHK price evlo?", "Sure, naan help panren. Price 70 lakhs la start aagudhu."],
+    ["Tanglish", "Indha project la 2 BHK price evlo?", "Sure, naan help panren. Price romba nalla value la start aagudhu."],
   ])("%s", async (_n, user, reply) => {
     const words = reply.split(/(?<= )/);
     const llm = new ScriptedStreamingLlm([{ deltas: ["Hi."] }, { deltas: words }]);
