@@ -11,12 +11,12 @@ process.env.EXOTEL_AGENTSTREAM_WEBHOOK_SECRET = "";
 process.env.TURN_END_SILENCE_MS = "300";
 process.env.MOCK_TELEPHONY_AUTOPLAY = "false";
 
-import { db } from "../../db/client.js";
+import { adminDb as db } from "../../db/client.js";
 import { calls, leads, usageEvents } from "../../db/schema.js";
 import { setTelephonyProvider } from "../../adapters/telephony/index.js";
 import { MockTelephonyProvider } from "../../adapters/telephony/mock.provider.js";
 import { userContext } from "../../auth/context.js";
-import { conversationsRepository } from "../../db/repositories/conversations.repository.js";
+import { conversationsRepository } from "../../test/repos.js";
 import { cleanupTenants, createMember, createTenant, loginCookie, type TestTenant } from "../../test/tenants.js";
 import {
   CapturingProvider,

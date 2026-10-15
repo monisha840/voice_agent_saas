@@ -9,7 +9,7 @@ process.env.AI_PROVIDER = "mock";
 process.env.TELEPHONY_PROVIDER = "mock";
 process.env.MOCK_TELEPHONY_AUTOPLAY = "false";
 
-import { db } from "../../db/client.js";
+import { adminDb as db } from "../../db/client.js";
 import { agentKnowledgeBindings, agentPhoneNumbers, agents, calls } from "../../db/schema.js";
 import { systemContext } from "../../auth/context.js";
 import { setTelephonyProvider } from "../../adapters/telephony/index.js";

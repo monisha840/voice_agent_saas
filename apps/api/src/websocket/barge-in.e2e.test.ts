@@ -21,7 +21,7 @@ process.env.REALTIME_BARGE_IN = "true";
 process.env.REALTIME_BARGE_IN_MIN_SPEECH_MS = "300";
 
 import { buildApp } from "../app.js";
-import { db } from "../db/client.js";
+import { adminDb as db } from "../db/client.js";
 import { leads } from "../db/schema.js";
 import { MockTelephonyProvider } from "../adapters/telephony/mock.provider.js";
 import { setTelephonyProvider } from "../adapters/telephony/index.js";

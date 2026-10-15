@@ -13,6 +13,8 @@
  * confined to one organization, so they pass every permission and see the
  * whole organization.
  */
+import { runInTenant } from "../db/tenant-context.js";
+import { scopeOf } from "./tenant-scoped.js";
 import { ForbiddenError } from "../shared/errors.js";
 import type { RequestContext } from "./context.js";
 import { moduleOfPermission, roleHasPermission, type Permission } from "./permissions.js";
@@ -87,12 +89,16 @@ function defaultProjectScope(ctx: RequestContext & { actor: { type: "user" } }):
 
 export async function leadScopeFor(ctx: RequestContext): Promise<LeadScope> {
   if (ctx.actor.type === "system") return { kind: "all" };
-  for (const p of scopeProviders.values()) if (p.lead) return p.lead(ctx);
-  return defaultLeadScope(ctx as RequestContext & { actor: { type: "user" } });
+  return runInTenant(scopeOf(ctx), async () => {
+    for (const p of scopeProviders.values()) if (p.lead) return p.lead(ctx);
+    return defaultLeadScope(ctx as RequestContext & { actor: { type: "user" } });
+  });
 }
 
 export async function projectScopeFor(ctx: RequestContext): Promise<ProjectScope> {
   if (ctx.actor.type === "system") return { kind: "all" };
-  for (const p of scopeProviders.values()) if (p.project) return p.project(ctx);
-  return defaultProjectScope(ctx as RequestContext & { actor: { type: "user" } });
+  return runInTenant(scopeOf(ctx), async () => {
+    for (const p of scopeProviders.values()) if (p.project) return p.project(ctx);
+    return defaultProjectScope(ctx as RequestContext & { actor: { type: "user" } });
+  });
 }

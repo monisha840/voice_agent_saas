@@ -14,13 +14,13 @@ process.env.EXOTEL_AGENTSTREAM_WEBHOOK_SECRET = "";
 process.env.MOCK_TELEPHONY_AUTOPLAY = "false";
 process.env.TURN_END_SILENCE_MS = "300";
 
-import { db } from "../../db/client.js";
+import { adminDb as db } from "../../db/client.js";
 import { calls, usageEvents } from "../../db/schema.js";
 import { systemContext } from "../../auth/context.js";
 import { ExotelProvider } from "../../adapters/telephony/exotel.provider.js";
 import { setTelephonyProvider } from "../../adapters/telephony/index.js";
-import { callsRepository } from "../../db/repositories/calls.repository.js";
-import { conversationsRepository } from "../../db/repositories/conversations.repository.js";
+import { callsRepository } from "../../test/repos.js";
+import { conversationsRepository } from "../../test/repos.js";
 import { lifecycle } from "../../runtime/lifecycle.js";
 import { cleanupTenants, createDefaultAgent, createTenant, type TestTenant } from "../../test/tenants.js";
 import { getCallRow, randomPhone, relaxRateLimits, startTestApp, waitForSummary } from "../../test/agent-first.js";
@@ -55,7 +55,7 @@ describe("outbound calls placed into an App Bazaar flow", () => {
       else process.env[k] = saved[k];
     }
   });
-  const build = () => new ExotelProvider().buildConnectRequest({ toNumber: "+919000000001", internalCallId: "call-1" });
+  const build = () => new ExotelProvider().buildConnectRequest({ toNumber: "+919000000001", internalCallId: "call-1" }, "signed.stream.token");
 
   it("with EXOTEL_FLOW_APP_ID the customer is connected to the flow: Url set, no StreamUrl/StreamType", () => {
     process.env.EXOTEL_FLOW_APP_ID = "1178749";
@@ -91,7 +91,7 @@ describe("outbound calls placed into an App Bazaar flow", () => {
     expect(body.get("StreamType")).toBe("bidirectional");
     const stream = new URL(body.get("StreamUrl")!);
     expect(stream.protocol).toBe("wss:");
-    expect(stream.searchParams.get("internalCallId")).toBe("call-1");
+    expect(stream.searchParams.get("st")).toBe("signed.stream.token");
   });
 });
 

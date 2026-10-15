@@ -6,7 +6,8 @@ import { loadEditorData } from "../editorData";
 import { LoadFailure, PageShell } from "@/components/PageShell";
 import { AgentEditor } from "../AgentEditor";
 
-export default async function AgentDetailPage({ params }: { params: { id: string } }) {
+export default async function AgentDetailPage({ params: paramsPromise }: { params: Promise<{ id: string }> }) {
+  const params = await paramsPromise;
   try {
     const [agent, d] = await Promise.all([api.getAgent(params.id), loadEditorData()]);
     return (

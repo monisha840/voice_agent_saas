@@ -10,6 +10,7 @@ import { isKnowledgeCategory, knowledgeSchemas } from "./knowledge.schemas.js";
 import { importFaqCsv, importUnitsCsv, type ImportKind } from "./knowledge-import.js";
 import { buildDraftMessages, parseKnowledgeDraft, type KnowledgeDraft } from "./knowledge-draft.js";
 import { getLlmProvider } from "../../adapters/ai/index.js";
+import { tenantScoped } from "../../auth/tenant-scoped.js";
 
 /**
  * Service boundary for project data. Routes and AI tools (get_project_*)
@@ -19,7 +20,7 @@ import { getLlmProvider } from "../../adapters/ai/index.js";
  * All project facts the AI may quote come from project_knowledge rows
  * fetched here, never hardcoded in this service or in any AI adapter.
  */
-export const projectsService = {
+const projectsServiceImpl = {
   async getProjectWithKnowledge(ctx: RequestContext, params: { projectId: string }) {
     assertCan(ctx, "projects:read");
     const scope = await projectScopeFor(ctx);
@@ -284,3 +285,5 @@ function assertCategory(category: string) {
   }
   return category;
 }
+
+export const projectsService = tenantScoped(projectsServiceImpl);

@@ -107,6 +107,13 @@ async function main() {
   const callSid = `preflight-${Date.now()}`;
   const streamSid = `stream-${callSid}`;
   try {
+    // Register the call exactly as the recommended production setup does (inbound webhook first, stream second).
+    // This keeps the preflight valid with STREAM_INBOUND_DIRECT_ALLOWED=false, where an unregistered call_sid is refused.
+    const reg = await fetch(
+      `${base}/api/telephony/exotel/inbound?${new URLSearchParams({ token: secret, CallSid: callSid, CallTo: FAKE_NUMBER, CallFrom: "+919000000098" })}`,
+      { headers: { "ngrok-skip-browser-warning": "1" } },
+    );
+    record("inbound webhook registers the call (dialed number routes to an agent)", reg.ok, `HTTP ${reg.status}`);
     const ws = new WebSocket(wsUrl(secret), { handshakeTimeout: 10_000 });
     const heard = { chunks: 0, badChunks: 0, marks: [] as string[], clear: 0 };
     let sawStreamSid = true;

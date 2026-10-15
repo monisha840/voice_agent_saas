@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { getConfig } from "../../config/env.js";
+import { runInTenant } from "../../db/tenant-context.js";
 import { projectsRepository } from "../../db/repositories/projects.repository.js";
 import { enforceDemoApiRateLimit } from "../../security/rate-limits.js";
 import { logger } from "../../shared/logger.js";
@@ -51,7 +52,7 @@ export async function demoPropertyRoutes(app: FastifyInstance) {
     const { apiKey, projectId } = getConfig().demoApi;
     if (apiKey.length < MIN_KEY_LENGTH || !projectId) return reply.status(404).send({ error: "Not found" });
 
-    enforceDemoApiRateLimit(req.ip);
+    await enforceDemoApiRateLimit(req.ip);
     const key = presentedKey(req);
     if (!key || !sameSecret(key, apiKey)) {
       logger.warn("demo-property: unauthorized request rejected");
@@ -60,7 +61,9 @@ export async function demoPropertyRoutes(app: FastifyInstance) {
 
     const project = await projectsRepository.findActiveByIdSystem({ id: projectId });
     if (!project) return reply.status(404).send({ error: "Demo project not found" });
-    const rows = await projectsRepository.getKnowledge({ organizationId: project.organizationId, projectId: project.id });
+    const rows = await runInTenant({ organizationId: project.organizationId }, async () =>
+      projectsRepository.getKnowledge({ organizationId: project.organizationId, projectId: project.id }),
+    );
     const byTopic = new Map(rows.map((r) => [r.category as string, r.content]));
     const available = KNOWLEDGE_CATEGORIES.filter((c) => byTopic.has(c));
 

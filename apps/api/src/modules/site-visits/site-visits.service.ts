@@ -6,6 +6,7 @@ import type { RequestContext } from "../../auth/context.js";
 import { assertCan, leadScopeFor } from "../../auth/access.js";
 import { auditService } from "../audit/audit.service.js";
 import { usageService } from "../usage/usage.service.js";
+import { tenantScoped } from "../../auth/tenant-scoped.js";
 
 /**
  * Service boundary for site-visit scheduling. AI tools (check_visit_slots,
@@ -71,7 +72,7 @@ function zonedInstant(year: number, month: number, day: number, hour: number, mi
   return new Date(wallAsUtc - (shown - wallAsUtc));
 }
 
-export const siteVisitsService = {
+const siteVisitsServiceImpl = {
   /** Returns the next few demo slots (Saturday mornings/afternoons). */
   checkVisitSlots(now: Date = new Date()): VisitSlot[] {
     const zone = businessTimeZone();
@@ -150,3 +151,5 @@ export const siteVisitsService = {
     return lead ? visit : null;
   },
 };
+
+export const siteVisitsService = tenantScoped(siteVisitsServiceImpl);

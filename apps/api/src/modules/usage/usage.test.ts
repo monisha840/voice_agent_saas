@@ -7,13 +7,13 @@ process.env.AI_PROVIDER = "mock";
 process.env.TELEPHONY_PROVIDER = "mock";
 
 import { buildApp } from "../../app.js";
-import { db } from "../../db/client.js";
+import { adminDb as db } from "../../db/client.js";
 import { calls, usageEvents } from "../../db/schema.js";
 import { userContext, type RequestContext } from "../../auth/context.js";
 import { callsService } from "../calls/calls.service.js";
 import { usageService, resolveRange } from "./usage.service.js";
-import { conversationsRepository } from "../../db/repositories/conversations.repository.js";
-import { usageRepository } from "../../db/repositories/usage.repository.js";
+import { conversationsRepository } from "../../test/repos.js";
+import { usageRepository } from "../../test/repos.js";
 import { cleanupTenants, createMember, createTenant, loginCookie, type TestTenant } from "../../test/tenants.js";
 
 let app: Awaited<ReturnType<typeof buildApp>>;

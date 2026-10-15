@@ -9,10 +9,10 @@ process.env.AI_PROVIDER = "mock";
 process.env.TELEPHONY_PROVIDER = "mock";
 
 import { buildApp } from "../../app.js";
-import { db } from "../../db/client.js";
+import { adminDb as db } from "../../db/client.js";
 import { auditLogs, projectKnowledge, users } from "../../db/schema.js";
 import { userContext } from "../../auth/context.js";
-import { projectMembersRepository } from "../../db/repositories/project-members.repository.js";
+import { projectMembersRepository } from "../../test/repos.js";
 import { projectsService } from "./projects.service.js";
 import { executeTool } from "../../ai-tools/index.js";
 import { demoContext } from "../../test/helpers.js";

@@ -86,6 +86,8 @@ export interface AppConfig {
   };
   /** Extra Host header values treated as private/local (comma-separated API_PRIVATE_HOSTS). */
   privateHosts: string[];
+  /** Bearer token for GET /metrics (METRICS_TOKEN, >= 16 chars). Unset: /metrics answers 404. */
+  metricsToken: string | null;
   auth: {
     cookieName: string;
     /** Idle lifetime; refreshed while the session is used. */
@@ -99,6 +101,36 @@ export interface AppConfig {
     demoLoginEnabled: boolean;
     demoUserEmail: string;
     scryptN: number;
+    mfa: {
+      /** base64 of 32 random bytes: encrypts stored TOTP secrets (AES-256-GCM). Required to enrol anyone. */
+      encryptionKey: string;
+      /** off: nothing required; warn: owners/admins are told to enrol; enforce: owners/admins without MFA can only reach enrolment. */
+      enforcement: "off" | "warn" | "enforce";
+      /** Shown in authenticator apps. */
+      issuer: string;
+      /** Password re-entry is required for sensitive account changes if the last proof is older than this. */
+      reauthWindowMs: number;
+      /** How long a half-finished login (password ok, second factor pending) stays valid. */
+      pendingTtlMs: number;
+    };
+    throttle: {
+      /** Consecutive failures for one (account, IP) pair before it is temporarily locked. */
+      pairThreshold: number;
+      /** Failures for one IP across accounts before it is temporarily locked. */
+      ipThreshold: number;
+      /** Failures for one account across all IPs before attempts are delayed (a bounded delay, never a lock-out). */
+      accountThreshold: number;
+      /** First lock duration; doubles with each further failure, up to maxLockMs. */
+      baseLockMs: number;
+      maxLockMs: number;
+      /** Failures older than this stop counting. */
+      windowMs: number;
+    };
+    passwords: {
+      minLength: number;
+      /** Have I Been Pwned range API (k-anonymity: only a 5-character SHA-1 prefix leaves the server). */
+      pwned: "off" | "fail-open" | "fail-closed";
+    };
   };
   /**
    * Honor X-Forwarded-* for req.ip. Only enable behind a proxy you control. TRUST_PROXY accepts true/false, a hop
@@ -107,11 +139,20 @@ export interface AppConfig {
   trustProxy: boolean | number | string;
   /** Fastify request body cap in bytes. */
   bodyLimitBytes: number;
-  /** In-memory limits (per process; reset on restart, not shared across instances). */
+  /** Rate limits. Counters live in PostgreSQL (shared by every API instance). */
   rateLimit: {
+    /**
+     * What GENERAL API routes (global per-IP, per-org call limit) do when the counter store errors: "open" (default,
+     * serve the request) or "closed" (503). Auth and sensitive-account routes always fail closed.
+     */
+    failMode: "open" | "closed";
     /** Per-IP default for authenticated API routes. */
     apiMax: number;
     apiWindowMs: number;
+    /** Per authenticated USER, same window (ordinary dashboard budget; users sharing a server IP do not share it). */
+    userMax: number;
+    /** Per ORGANIZATION, same window (aggregate ceiling so one tenant cannot monopolise the API). */
+    orgMax: number;
     /** Per-organization cap on call initiation. */
     callsPerOrgMax: number;
     callsPerOrgWindowMs: number;
@@ -166,10 +207,65 @@ export interface AppConfig {
     /** A tool that has not finished by now is reported to the model as timed out (it cannot be cancelled). */
     toolTimeoutMs: number;
   };
+  /** Media-stream authentication (per-call tokens): see security/stream-token.ts. */
+  stream: {
+    /** "<kid>:<base64>[,...]": first signs, all verify. Empty = development throw-away key. */
+    tokenKeys: string;
+    /** How long a token stays valid; must cover the ring time of an outbound call. */
+    tokenTtlMs: number;
+    /** Connections one token may open (legitimate provider reconnects), counted across instances. */
+    tokenMaxUses: number;
+    /** Accept the shared webhook secret alone on the media stream (needed by inbound calls and flow mode). */
+    allowStaticSecret: boolean;
+    /** Static-secret streams (inbound / flow mode) may create an inbound call from their own start event when no webhook announced it. */
+    inboundDirectAllowed: boolean;
+    /** A static-secret stream must arrive within this long of its inbound call being registered. */
+    inboundMaxAgeMs: number;
+    /** A static-secret stream (flow mode) must arrive within this long of its outbound call being created. */
+    flowMaxAgeMs: number;
+    /**
+     * Static-secret streams may attach only to a call still `initiating`/`ringing`. Off by default because Exotel's
+     * "answered" status callback can legitimately reach us before the flow's stream connects (call already in_progress).
+     */
+    staticRequirePendingStatus: boolean;
+    /** Exotel account_sid values a stream may carry (plus EXOTEL_ACCOUNT_SID when set). Empty = not enforced. */
+    allowedAccountSids: string[];
+    /** A shared (database) stream claim whose heartbeat is older than this is dead and may be taken over. */
+    claimStaleMs: number;
+    /** How often a live stream refreshes its claim. */
+    claimHeartbeatMs: number;
+    /** Opt-in per-call grants minted by the dynamic Voicebot endpoint (security/stream-grant.ts). */
+    grantTtlMs: number;
+    /** Connections one grant may open (provider reconnects), counted across instances. */
+    grantMaxUses: number;
+    /** Refuse streams that carry no grant (static-secret-only). Strongest mode; needs the applet on the dynamic endpoint. */
+    requireGrant: boolean;
+  };
   /** Graceful shutdown. */
   shutdown: {
     /** How long live calls may keep running after SIGTERM before their sockets are closed. */
     drainTimeoutMs: number;
+  };
+  /**
+   * Retention of security_events (see docs/security/audit-retention.md). OFF by default: nothing is deleted until
+   * business/legal has approved the periods. Category mapping lives in SQL (app_security_event_category).
+   */
+  securityRetention: {
+    /** Effective switch: SECURITY_EVENT_RETENTION_ENABLED=true AND a recorded policy approval reference. */
+    enabled: boolean;
+    /** Reference (ticket/decision id) of the business/legal approval of the periods; deletion never runs without it. */
+    approvalRef: string;
+    /** Copy purged rows to security_events_archive (same statement) instead of dropping them outright. */
+    archive: boolean;
+    daysByCategory: {
+      auth_session: number;
+      mfa_config: number;
+      access_denied: number;
+      privileged_action: number;
+      other: number;
+    };
+    batchSize: number;
+    maxBatchesPerRun: number;
   };
   /** Reaper for calls whose final provider callback never arrives. */
   staleCalls: { pendingMs: number; inProgressMs: number; intervalMs: number };
@@ -316,6 +412,7 @@ export function getConfig(): AppConfig {
       maxMalformedFrames: Math.max(1, intEnv("REALTIME_MAX_MALFORMED_FRAMES", 100)),
       wsMaxPayloadBytes: Math.max(4096, intEnv("REALTIME_WS_MAX_PAYLOAD_BYTES", 256 * 1024)),
     },
+    metricsToken: (process.env.METRICS_TOKEN ?? "").length >= 16 ? (process.env.METRICS_TOKEN as string) : null,
     privateHosts: (process.env.API_PRIVATE_HOSTS ?? "")
       .split(",")
       .map((h) => h.trim().toLowerCase())
@@ -332,12 +429,38 @@ export function getConfig(): AppConfig {
       demoLoginEnabled: (process.env.DEMO_LOGIN_ENABLED ?? (process.env.NODE_ENV === "production" ? "false" : "true")) === "true",
       demoUserEmail: process.env.DEMO_USER_EMAIL ?? "demo@greenvalley.demo",
       scryptN: Number(process.env.AUTH_SCRYPT_N ?? 32768),
+      mfa: {
+        encryptionKey: process.env.MFA_ENCRYPTION_KEY ?? "",
+        enforcement: (["off", "warn", "enforce"] as const).includes(process.env.MFA_ENFORCEMENT as never)
+          ? (process.env.MFA_ENFORCEMENT as "off" | "warn" | "enforce")
+          : "warn",
+        issuer: process.env.MFA_ISSUER ?? "Voice Agent",
+        reauthWindowMs: Number(process.env.REAUTH_WINDOW_MS ?? 10 * 60_000),
+        pendingTtlMs: Number(process.env.MFA_PENDING_TTL_MS ?? 10 * 60_000),
+      },
+      throttle: {
+        pairThreshold: Number(process.env.LOGIN_PAIR_THRESHOLD ?? 5),
+        ipThreshold: Number(process.env.LOGIN_IP_THRESHOLD ?? 30),
+        accountThreshold: Number(process.env.LOGIN_ACCOUNT_THRESHOLD ?? 20),
+        baseLockMs: Number(process.env.LOGIN_BASE_LOCK_MS ?? 30_000),
+        maxLockMs: Number(process.env.LOGIN_MAX_LOCK_MS ?? 15 * 60_000),
+        windowMs: Number(process.env.LOGIN_FAILURE_WINDOW_MS ?? 15 * 60_000),
+      },
+      passwords: {
+        minLength: Number(process.env.PASSWORD_MIN_LENGTH ?? 10),
+        pwned: (["off", "fail-open", "fail-closed"] as const).includes(process.env.PWNED_PASSWORDS as never)
+          ? (process.env.PWNED_PASSWORDS as "off" | "fail-open" | "fail-closed")
+          : "off",
+      },
     },
     trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
     bodyLimitBytes: Number(process.env.BODY_LIMIT_BYTES ?? 256 * 1024),
     rateLimit: {
+      failMode: process.env.RATE_LIMIT_FAIL_MODE === "closed" ? "closed" : "open",
       apiMax: Number(process.env.RATE_LIMIT_API_MAX ?? 300),
       apiWindowMs: Number(process.env.RATE_LIMIT_API_WINDOW_MS ?? 60_000),
+      userMax: Number(process.env.RATE_LIMIT_USER_MAX ?? 300),
+      orgMax: Number(process.env.RATE_LIMIT_ORG_MAX ?? 1500),
       callsPerOrgMax: Number(process.env.RATE_LIMIT_CALLS_PER_ORG_MAX ?? 10),
       callsPerOrgWindowMs: Number(process.env.RATE_LIMIT_CALLS_PER_ORG_WINDOW_MS ?? 60_000),
     },
@@ -365,8 +488,43 @@ export function getConfig(): AppConfig {
       breakerCooldownMs: intEnv("PROVIDER_BREAKER_COOLDOWN_MS", 30_000),
       toolTimeoutMs: Math.max(1, intEnv("TOOL_TIMEOUT_MS", 10_000)),
     },
+    stream: {
+      tokenKeys: process.env.STREAM_TOKEN_KEYS ?? "",
+      tokenTtlMs: Math.max(30_000, intEnv("STREAM_TOKEN_TTL_MS", 15 * 60_000)),
+      tokenMaxUses: Math.max(1, intEnv("STREAM_TOKEN_MAX_USES", 3)),
+      allowStaticSecret: (process.env.STREAM_ALLOW_STATIC_SECRET ?? "true") !== "false",
+      inboundDirectAllowed: (process.env.STREAM_INBOUND_DIRECT_ALLOWED ?? "true") !== "false",
+      inboundMaxAgeMs: Math.max(5_000, intEnv("STREAM_INBOUND_MAX_AGE_MS", 10 * 60_000)),
+      flowMaxAgeMs: Math.max(5_000, intEnv("STREAM_FLOW_MAX_AGE_MS", 30 * 60_000)),
+      staticRequirePendingStatus: (process.env.STREAM_STATIC_REQUIRE_PENDING_STATUS ?? "false") === "true",
+      allowedAccountSids: (process.env.STREAM_ALLOWED_ACCOUNT_SIDS ?? "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+      claimStaleMs: Math.max(1_000, intEnv("STREAM_CLAIM_STALE_MS", 30_000)),
+      claimHeartbeatMs: Math.max(200, intEnv("STREAM_CLAIM_HEARTBEAT_MS", 10_000)),
+      grantTtlMs: Math.max(5_000, intEnv("STREAM_GRANT_TTL_MS", 10 * 60_000)),
+      grantMaxUses: Math.max(1, intEnv("STREAM_GRANT_MAX_USES", 3)),
+      requireGrant: (process.env.STREAM_REQUIRE_GRANT ?? "false") === "true",
+    },
     shutdown: {
       drainTimeoutMs: intEnv("SHUTDOWN_DRAIN_TIMEOUT_MS", 120_000),
+    },
+    securityRetention: {
+      enabled:
+        (process.env.SECURITY_EVENT_RETENTION_ENABLED ?? "false") === "true" &&
+        (process.env.SECURITY_EVENT_RETENTION_APPROVAL_REF ?? "").trim() !== "",
+      approvalRef: (process.env.SECURITY_EVENT_RETENTION_APPROVAL_REF ?? "").trim(),
+      archive: (process.env.SECURITY_EVENT_RETENTION_ARCHIVE ?? "false") === "true",
+      daysByCategory: {
+        auth_session: Math.max(1, intEnv("SECURITY_EVENT_RETENTION_DAYS_AUTH_SESSION", 400)),
+        mfa_config: Math.max(1, intEnv("SECURITY_EVENT_RETENTION_DAYS_MFA_CONFIG", 730)),
+        access_denied: Math.max(1, intEnv("SECURITY_EVENT_RETENTION_DAYS_ACCESS_DENIED", 400)),
+        privileged_action: Math.max(1, intEnv("SECURITY_EVENT_RETENTION_DAYS_PRIVILEGED_ACTION", 730)),
+        other: Math.max(1, intEnv("SECURITY_EVENT_RETENTION_DAYS_OTHER", 400)),
+      },
+      batchSize: Math.min(10_000, Math.max(1, intEnv("SECURITY_EVENT_RETENTION_BATCH_SIZE", 1000))),
+      maxBatchesPerRun: Math.max(1, intEnv("SECURITY_EVENT_RETENTION_MAX_BATCHES", 20)),
     },
     staleCalls: {
       pendingMs: Number(process.env.STALE_CALL_PENDING_MS ?? 10 * 60_000),

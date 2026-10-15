@@ -112,6 +112,7 @@ export async function leadsRoutes(app: FastifyInstance) {
       const result = await provider.initiateCall({
         toNumber,
         internalCallId: call.id,
+        organizationId: ctx.organizationId,
       });
       await callsService.attachProviderCallId(ctx, { callId: call.id, providerCallId: result.providerCallId });
       await auditService.record(ctx, {

@@ -11,9 +11,9 @@ process.env.AI_PROVIDER = "mock";
 process.env.TELEPHONY_PROVIDER = "mock";
 process.env.EXOTEL_AGENTSTREAM_WEBHOOK_SECRET = "";
 
-import { db } from "../../db/client.js";
+import { adminDb as db } from "../../db/client.js";
 import { projects } from "../../db/schema.js";
-import { projectsRepository } from "../../db/repositories/projects.repository.js";
+import { projectsRepository } from "../../test/repos.js";
 import { redactUrl } from "../../security/telephony-auth.js";
 import { resetCallRateLimits } from "../../security/rate-limits.js";
 import { cleanupTenants, createTenant, type TestTenant } from "../../test/tenants.js";

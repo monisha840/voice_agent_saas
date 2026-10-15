@@ -2,10 +2,11 @@
  * Permissions, data scope and route registration are contributed by the Sales module's manifest, not hardcoded in
  * the core. These tests run the platform with Sales registered, unregistered, enabled and disabled per organization.
  */
+import { randomUUID } from "node:crypto";
 import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach } from "vitest";
 
 import { buildApp } from "../../app.js";
-import { db } from "../../db/client.js";
+import { adminDb as db } from "../../db/client.js";
 import { leads } from "../../db/schema.js";
 import { setTelephonyProvider } from "../../adapters/telephony/index.js";
 import { can, assertCan, leadScopeFor, projectScopeFor } from "../../auth/access.js";
@@ -163,19 +164,19 @@ describe("data scope is provided by the Sales module, with conservative core def
     const agentCtx = userContext(T.orgId, agentUserId, "AGENT");
     expect(await projectScopeFor(agentCtx)).toEqual({ kind: "ids", projectIds: [T.projectId] });
     expect(await leadScopeFor(agentCtx)).toEqual({ kind: "assigned", userId: agentUserId });
-    expect(await projectScopeFor(userContext(T.orgId, "o", "OWNER"))).toEqual({ kind: "all" });
-    expect(await leadScopeFor(userContext(T.orgId, "o", "ADMIN"))).toEqual({ kind: "all" });
+    expect(await projectScopeFor(userContext(T.orgId, randomUUID(), "OWNER"))).toEqual({ kind: "all" });
+    expect(await leadScopeFor(userContext(T.orgId, randomUUID(), "ADMIN"))).toEqual({ kind: "all" });
   });
 
   it("without Sales: the core defaults apply and no project or lead data is consulted", async () => {
     unregisterModule("sales");
     const agentCtx = userContext(T.orgId, agentUserId, "AGENT");
     expect(await projectScopeFor(agentCtx)).toEqual({ kind: "ids", projectIds: [] });
-    expect(await projectScopeFor(userContext(T.orgId, "m", "MANAGER"))).toEqual({ kind: "ids", projectIds: [] });
-    expect(await projectScopeFor(userContext(T.orgId, "o", "OWNER"))).toEqual({ kind: "all" });
+    expect(await projectScopeFor(userContext(T.orgId, randomUUID(), "MANAGER"))).toEqual({ kind: "ids", projectIds: [] });
+    expect(await projectScopeFor(userContext(T.orgId, randomUUID(), "OWNER"))).toEqual({ kind: "all" });
     // Calls: owners/admins all, managers only leadless calls, agents only their own calls.
-    expect(await leadScopeFor(userContext(T.orgId, "o", "OWNER"))).toEqual({ kind: "all" });
-    expect(await leadScopeFor(userContext(T.orgId, "m", "MANAGER"))).toEqual({ kind: "projects", projectIds: [] });
+    expect(await leadScopeFor(userContext(T.orgId, randomUUID(), "OWNER"))).toEqual({ kind: "all" });
+    expect(await leadScopeFor(userContext(T.orgId, randomUUID(), "MANAGER"))).toEqual({ kind: "projects", projectIds: [] });
     expect(await leadScopeFor(agentCtx)).toEqual({ kind: "assigned", userId: agentUserId });
     // System flows are never narrowed.
     expect(await leadScopeFor(systemContext(T.orgId, "media-stream"))).toEqual({ kind: "all" });

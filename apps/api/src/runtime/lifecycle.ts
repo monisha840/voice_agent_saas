@@ -6,6 +6,7 @@
  * readiness turns red so the load balancer stops sending traffic) while every live call keeps running until it ends
  * on its own. Only after the drain timeout are the remaining sockets closed with a polite "going away".
  */
+import { randomUUID } from "node:crypto";
 import { ServiceUnavailableError } from "../shared/errors.js";
 import { logger } from "../shared/logger.js";
 
@@ -17,6 +18,8 @@ export interface LiveSession {
 }
 
 export class Lifecycle {
+  /** Identifies this process in the shared stream-claim table. */
+  readonly instanceId = randomUUID();
   private draining = false;
   private readonly sessions = new Set<LiveSession>();
   private readonly tasks = new Set<Promise<unknown>>();
@@ -47,6 +50,24 @@ export class Lifecycle {
         this.idleWaiters = [];
         for (const w of waiters) w();
       }
+    };
+  }
+
+  private readonly streamClaims = new Set<string>();
+
+  /**
+   * Atomically claims the media stream of a call on this process. Returns a release function, or null when the call
+   * already has a stream (so two simultaneous connections for one call cannot both attach: the check and the claim are
+   * one synchronous step, unlike "is a session registered yet", which only becomes true after asynchronous setup).
+   */
+  claimStream(callId: string): (() => void) | null {
+    if (this.streamClaims.has(callId)) return null;
+    this.streamClaims.add(callId);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.streamClaims.delete(callId);
     };
   }
 

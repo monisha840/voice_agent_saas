@@ -9,7 +9,7 @@ import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { loadEnv } from "../config/env.js";
-import { getTestDatabaseUrl } from "./test-database.js";
+import { getTestDatabaseUrl, getTestRuntimeUrl, TEST_RUNTIME_PASSWORD, TEST_RUNTIME_ROLE } from "./test-database.js";
 
 export default async function setup() {
   loadEnv();
@@ -30,11 +30,19 @@ export default async function setup() {
   await sql.unsafe("DROP SCHEMA IF EXISTS drizzle CASCADE; DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;");
   const here = dirname(fileURLToPath(import.meta.url));
   await migrate(drizzle(sql), { migrationsFolder: join(here, "../db/migrations") });
+  // The migration created the NOLOGIN runtime role; like a real deployment, give it a login out of band.
+  await sql.unsafe(`ALTER ROLE ${TEST_RUNTIME_ROLE} LOGIN PASSWORD '${TEST_RUNTIME_PASSWORD}'`);
   await sql.end();
 
-  process.env.DATABASE_URL = testUrl;
+  // The application runs as the restricted role; seeding (a provisioning step) uses the administrative connection.
+  process.env.DATABASE_URL = getTestRuntimeUrl();
+  process.env.DATABASE_ADMIN_URL = testUrl;
+  // Workers inherit this environment: pin the owner URL so they can derive both identities from it.
+  process.env.TEST_DATABASE_URL = testUrl;
   const { runSeed } = await import("../scripts/seed.js");
-  await runSeed();
-  const { sql: appSql } = await import("../db/client.js");
+  const { runAsAdmin } = await import("../db/tenant-context.js");
+  await runAsAdmin(() => runSeed());
+  const { sql: appSql, adminSql: runtimeAdminSql } = await import("../db/client.js");
   await appSql.end();
+  await runtimeAdminSql?.end();
 }

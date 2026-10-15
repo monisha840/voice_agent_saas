@@ -4,8 +4,8 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { executeTool } from "../../../ai-tools/index.js";
-import { projectsRepository } from "../../../db/repositories/projects.repository.js";
-import { callsRepository } from "../../../db/repositories/calls.repository.js";
+import { projectsRepository } from "../../../test/repos.js";
+import { callsRepository } from "../../../test/repos.js";
 import { systemContext } from "../../../auth/context.js";
 import { projectsService } from "../../projects/projects.service.js";
 import { cleanupTenants, createTenant, type TestTenant } from "../../../test/tenants.js";

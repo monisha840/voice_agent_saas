@@ -1,3 +1,6 @@
+import { isUniqueViolation } from "../../db/pg-error.js";
+import { securityEvents } from "../../security/security-events.js";
+import { runInTenant } from "../../db/tenant-context.js";
 import type { SQL } from "drizzle-orm";
 import { callsRepository, ownCallsVisibility, type CallType } from "../../db/repositories/calls.repository.js";
 import { conversationsRepository } from "../../db/repositories/conversations.repository.js";
@@ -18,7 +21,9 @@ import { systemContext, type RequestContext } from "../../auth/context.js";
 import { assertCan } from "../../auth/access.js";
 import { auditService } from "../audit/audit.service.js";
 import { callHooks } from "./call-hooks.js";
+import { meterEndedCall } from "../billing/call-ended-hook.js";
 import type { TranscriptTurn } from "../../db/repositories/conversations.repository.js";
+import { tenantScoped } from "../../auth/tenant-scoped.js";
 
 type ProviderCallStatus = "ringing" | "in_progress" | "completed" | "busy" | "no_answer" | "failed";
 const TERMINAL_PROVIDER_STATUSES: ProviderCallStatus[] = ["completed", "busy", "no_answer", "failed"];
@@ -89,7 +94,7 @@ function normalizeNumber(input: string): string {
  *    identifier with no login. They load the call "any org", then derive a system context from the CALL'S OWN
  *    organization, so everything downstream stays inside that one tenant.
  */
-export const callsService = {
+const callsServiceImpl = {
   async getCallDetail(ctx: RequestContext, params: { callId: string }) {
     assertCan(ctx, "calls:read");
     const org = ctx.organizationId;
@@ -199,7 +204,7 @@ export const callsService = {
     const simulated = input.callType === "test" && !toNumber;
     const provider: ITelephonyProvider = simulated ? simulationProvider() : getTelephonyProvider();
     try {
-      const result = await provider.initiateCall({ toNumber: toNumber ?? SIMULATED_NUMBER, internalCallId: call.id });
+      const result = await provider.initiateCall({ toNumber: toNumber ?? SIMULATED_NUMBER, internalCallId: call.id, organizationId: ctx.organizationId });
       await this.attachProviderCallId(ctx, { callId: call.id, providerCallId: result.providerCallId });
       await auditService.record(ctx, {
         action: "call.initiated",
@@ -236,6 +241,8 @@ export const callsService = {
     }
     const route = await agentPhoneNumbersRepository.findByNumberAnyOrg({ phoneNumber: dialed });
     if (!route) throw new NotFoundError(`No agent answers ${params.dialedNumber}`);
+    // From here on everything belongs to the organization that owns the dialed number (a verified database record).
+    return runInTenant({ organizationId: route.organizationId }, async () => {
     const agent = await agentsRepository.findById({ organizationId: route.organizationId, id: route.agentId });
     if (!agent || agent.status !== "active") throw new NotFoundError(`No active agent answers ${params.dialedNumber}`);
 
@@ -263,7 +270,7 @@ export const callsService = {
       });
     } catch (err) {
       // Lost a race with the other announcement of the same provider call: use the record that won.
-      if (params.providerCallId && (err as { code?: string }).code === "23505") {
+      if (params.providerCallId && isUniqueViolation(err)) {
         const winner = await callsRepository.findByProviderCallIdAnyOrg({ providerCallId: params.providerCallId });
         if (winner) return winner;
       }
@@ -277,6 +284,7 @@ export const callsService = {
       metadata: { callId: call.id, agentId: agent.id, leadId },
     });
     return call;
+    });
   },
 
   async attachProviderCallId(ctx: RequestContext, params: { callId: string; providerCallId: string }) {
@@ -329,6 +337,7 @@ export const callsService = {
     params: { status: ProviderCallStatus; recordingUrl?: string },
     source: "exotel-webhook" | "media-stream",
   ): Promise<{ call: CallRow | null; finalizeCallId?: string }> {
+    return runInTenant({ organizationId: call.organizationId }, async () => {
     const ctx = systemContext(call.organizationId, source);
     const org = ctx.organizationId;
 
@@ -365,6 +374,8 @@ export const callsService = {
       });
       return { call };
     }
+    // Usage metering at the terminal transition (exactly one caller gets here per call); never throws.
+    await meterEndedCall(org, updated);
 
     let finalizeCallId: string | undefined;
     if (params.status === "completed") {
@@ -373,6 +384,7 @@ export const callsService = {
       await callHooks.onStatus(ctx, call, params.status === "busy" ? "busy" : params.status === "no_answer" ? "no_answer" : "failed");
     }
     return { call: updated, finalizeCallId };
+    });
   },
 
   /**
@@ -428,6 +440,7 @@ export const callsService = {
     let closed = 0;
     for (const call of stale) {
       try {
+        await runInTenant({ organizationId: call.organizationId }, async () => {
         const ctx = systemContext(call.organizationId, "reaper");
         const answered = call.status === "in_progress";
         const updated = await callsRepository.transitionToTerminal({
@@ -436,17 +449,27 @@ export const callsService = {
           status: answered ? "completed" : "failed",
           endedAt: now,
         });
-        if (!updated) continue; // a real callback got there first
+        if (!updated) return; // a real callback got there first
+        await meterEndedCall(call.organizationId, updated);
         closed++;
         logger.warn("calls.service: closed stale call", { callId: call.id, previousStatus: call.status });
         if (answered) await this.finalizeCall(ctx, { callId: call.id });
         else await callHooks.onStatus(ctx, call, "failed");
+        });
       } catch (err) {
         logger.error("calls.service: failed to close stale call", {
           callId: call.id,
           error: err instanceof Error ? err.message : String(err),
         });
       }
+    }
+    if (stale.length > 0) {
+      // A cross-tenant system action: leave a trace of what the reaper did (counts only, no payloads).
+      await securityEvents.record({
+        type: "system.privileged_action",
+        outcome: "info",
+        metadata: { action: "stale_call_reaper", considered: stale.length, closed },
+      });
     }
     return { closed };
   },
@@ -505,3 +528,5 @@ function simulationProvider(): ITelephonyProvider {
   const configured = getTelephonyProvider();
   return configured.name === "mock" ? configured : new MockTelephonyProvider();
 }
+
+export const callsService = tenantScoped(callsServiceImpl);

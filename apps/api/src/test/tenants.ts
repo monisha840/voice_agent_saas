@@ -4,8 +4,8 @@
  * tables production uses, so isolation tests exercise real data.
  */
 import { randomBytes } from "node:crypto";
-import { and, eq, inArray } from "drizzle-orm";
-import { db } from "../db/client.js";
+import { and, eq, inArray, sql } from "drizzle-orm";
+import { adminDb as db } from "../db/client.js";
 import {
   agentConfigs,
   agents,
@@ -18,6 +18,7 @@ import {
   memberships,
   organizationModules,
   organizations,
+  securityEvents,
   projectKnowledge,
   projectMembers,
   projects,
@@ -164,8 +165,16 @@ export async function createTenant(label: string, opts: { modules?: string[] } =
 export async function cleanupTenants() {
   if (created.orgIds.length > 0) {
     // Append-only / dependent tables first (audit and usage are restricted by FK, so they must go before the organization).
+    // Billing rows are append-only (trigger + restricted grants); fixtures remove them as the owner with triggers off.
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`set local session_replication_role = replica`);
+      for (const table of ["usage_ledger", "billing_events", "subscriptions"]) {
+        await tx.execute(sql`delete from ${sql.raw(table)} where organization_id in (${sql.join(created.orgIds.map((id) => sql`${id}::uuid`), sql`, `)})`);
+      }
+    });
     await db.delete(usageEvents).where(inArray(usageEvents.organizationId, created.orgIds));
     await db.delete(auditLogs).where(inArray(auditLogs.organizationId, created.orgIds));
+    await db.delete(securityEvents).where(inArray(securityEvents.organizationId, created.orgIds));
     await db.delete(followUps).where(inArray(followUps.organizationId, created.orgIds));
     await db.delete(agentConfigs).where(inArray(agentConfigs.organizationId, created.orgIds));
     await db.delete(organizationModules).where(inArray(organizationModules.organizationId, created.orgIds));
@@ -178,7 +187,25 @@ export async function cleanupTenants() {
     await db.delete(projects).where(inArray(projects.organizationId, created.orgIds));
     await db.delete(agents).where(inArray(agents.organizationId, created.orgIds)); // bindings cascade
     await db.delete(memberships).where(inArray(memberships.organizationId, created.orgIds));
-    for (const id of created.orgIds) await db.delete(organizations).where(eq(organizations.id, id));
+    for (const id of created.orgIds) {
+      // A call finalized a moment ago may still be writing its (append-only) billing rows: purge and retry.
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await db.delete(organizations).where(eq(organizations.id, id));
+          break;
+        } catch (err) {
+          const code = (err as { cause?: { code?: string } }).cause?.code ?? (err as { code?: string }).code;
+          if (code !== "23503" || attempt >= 6) throw err;
+          await new Promise((r) => setTimeout(r, 150));
+          await db.transaction(async (tx) => {
+            await tx.execute(sql`set local session_replication_role = replica`);
+            for (const table of ["usage_ledger", "billing_events", "subscriptions", "usage_events", "audit_logs", "security_events"]) {
+              await tx.execute(sql`delete from ${sql.raw(table)} where organization_id = ${id}::uuid`);
+            }
+          });
+        }
+      }
+    }
   }
   if (created.userIds.length > 0) await db.delete(users).where(inArray(users.id, created.userIds));
   created.orgIds.length = 0;

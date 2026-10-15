@@ -1,8 +1,9 @@
 import { describe, it, expect, afterAll } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { db } from "../db/client.js";
+import { adminDb as db } from "../db/client.js";
 import { projectKnowledge, projects } from "../db/schema.js";
 import { backfillKnowledge } from "./backfill-knowledge.js";
+import { runAsAdmin } from "../db/tenant-context.js";
 import { cleanupTenants, createTenant } from "../test/tenants.js";
 
 afterAll(cleanupTenants);
@@ -32,7 +33,7 @@ describe("backfill-knowledge", () => {
       { organizationId: t.orgId, projectId: t.projectId, category: "booking", content: { bookingAmount: 5, currency: "INR" } },
     ]);
 
-    await backfillKnowledge();
+    await runAsAdmin(() => backfillKnowledge());
     const byCat = Object.fromEntries((await rowsOf(t.projectId)).map((r) => [r.category, r.content]));
     expect(byCat.rera).toMatchObject({ registrationNumber: "PRM/KA/RERA/1251/309" });
     expect(byCat.loan).toMatchObject({ assistanceAvailable: true });
@@ -41,7 +42,7 @@ describe("backfill-knowledge", () => {
     expect(await rowsOf(noFaq.id)).toHaveLength(0);
 
     const before = (await rowsOf(t.projectId)).length;
-    const second = await backfillKnowledge();
+    const second = await runAsAdmin(() => backfillKnowledge());
     expect((await rowsOf(t.projectId)).length).toBe(before);
     expect(second.inserted).toBe(0);
   });
@@ -61,7 +62,7 @@ describe("backfill-knowledge", () => {
         ],
       },
     });
-    await backfillKnowledge();
+    await runAsAdmin(() => backfillKnowledge());
     const rows = await db
       .select()
       .from(projectKnowledge)

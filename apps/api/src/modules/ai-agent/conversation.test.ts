@@ -4,7 +4,7 @@ import { MockLlmProvider } from "../../adapters/ai/mock.llm.provider.js";
 import { projectsService } from "../projects/projects.service.js";
 import { leadsService } from "../leads/leads.service.js";
 import { callsService } from "../calls/calls.service.js";
-import { conversationsRepository } from "../../db/repositories/conversations.repository.js";
+import { conversationsRepository } from "../../test/repos.js";
 import type { ToolExecutionContext } from "../../ai-tools/types.js";
 import type { RequestContext } from "../../auth/context.js";
 import { demoContext } from "../../test/helpers.js";

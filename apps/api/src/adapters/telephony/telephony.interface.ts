@@ -9,6 +9,11 @@ export interface InitiateCallParams {
   toNumber: string;
   /** Our internal calls.id, so callbacks can be correlated back to it. */
   internalCallId: string;
+  /**
+   * The organization that owns the call. Bound into the per-call media-stream token, so the stream can only ever
+   * attach to this call in this organization. Required by providers that dial with a stream URL.
+   */
+  organizationId?: string;
 }
 
 export interface InitiateCallResult {

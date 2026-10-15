@@ -15,6 +15,7 @@ import { auditService } from "../audit/audit.service.js";
 import { AGENT_NAME, COMPANY_NAME } from "../ai-agent/persona.js";
 import { SUPPORTED_LANGUAGES, TONES, upsertAgentConfigSchema, type AgentConfigFields } from "./agent-config.validation.js";
 import type { AgentConfigSource, ResolvedAgentConfig } from "./agent-config.types.js";
+import { tenantScoped } from "../../auth/tenant-scoped.js";
 
 /**
  * LEGACY FAÇADE. The `agent_configs` table is no longer read by calls: the live call path (calls/call-runtime.ts)
@@ -251,7 +252,7 @@ async function mirrorOrFail(op: () => Promise<void>) {
   }
 }
 
-export const agentConfigService = {
+const agentConfigServiceImpl = {
   /**
    * The EFFECTIVE config for a project: project override > organization default > built-in default.
    * Used by the live call path (system context); never fails because of a missing config.
@@ -344,3 +345,5 @@ export const agentConfigService = {
 function definedOnly(fields: AgentConfigFields): Partial<ResolvedAgentConfig> {
   return Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined)) as Partial<ResolvedAgentConfig>;
 }
+
+export const agentConfigService = tenantScoped(agentConfigServiceImpl);

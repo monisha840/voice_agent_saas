@@ -3,3 +3,14 @@ packages:
 allowBuilds:
   esbuild: true
   unrs-resolver: true
+
+# Next 15.5 pins postcss 8.4.31 (advisories GHSA-qx2v-qp2m-jg93, GHSA-6g55-p6wh-862q, GHSA-r28c-9q8g-f849,
+# GHSA-fxqj-rqcc-2cmp, all fixed in >= 8.5.23). Same major API; verified by `next build` + web typecheck.
+overrides:
+  "next>postcss": "^8.5.30"
+  # Dev-only advisories (see docs/security/dev-dependencies.md).
+  # drizzle-kit's legacy @esbuild-kit loader pins esbuild 0.18.20 (GHSA-67mh-4wv8-2f99, fixed >= 0.25.0).
+  "@esbuild-kit/core-utils>esbuild": "^0.25.12"
+  # tailwindcss 3 pins postcss-selector-parser 6.x (GHSA-rj75-hqrm-r3gf, fixed >= 7.1.6).
+  "tailwindcss>postcss-selector-parser": "^7.1.6"
+  "postcss-nested>postcss-selector-parser": "^7.1.6"

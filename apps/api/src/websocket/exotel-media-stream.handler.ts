@@ -47,7 +47,10 @@ import { chunkPcmForExotel, pcm16ToWav, pcmDurationMs, ttsAudioToPcm } from "../
 import { TurnDetector } from "../audio/turn-detector.js";
 import { getConfig } from "../config/env.js";
 import { logger } from "../shared/logger.js";
+import { metrics } from "../runtime/metrics.js";
+import { securityEvents } from "../security/security-events.js";
 import { lifecycle } from "../runtime/lifecycle.js";
+import { streamClaimsRepository } from "../db/repositories/security.repository.js";
 import { CallGuard } from "./call-guard.js";
 import { fixedLine } from "../modules/ai-agent/fallback-lines.js";
 import { NotFoundError, ProviderRequestError } from "../shared/errors.js";
@@ -84,8 +87,19 @@ interface ExotelEvent {
 }
 
 export interface MediaStreamHints {
+  /** How the upgrade was authenticated: a per-call token, or only the deployment's shared secret. Absent = our own web client. */
+  auth?: "token" | "grant" | "static";
   /** Present when Exotel passes our StreamUrl query string through. Otherwise resolved from start.call_sid. */
   internalCallId?: string;
+  /** From a verified per-call stream token: the call and organization this stream may attach to, and nothing else. */
+  streamClaims?: { callId: string; organizationId: string; jti: string };
+}
+
+/** The stream is not allowed to attach to the call it resolved to (wrong call/tenant, ended call, second stream). */
+class StreamRejectedError extends Error {
+  constructor(public readonly reason: string) {
+    super(`stream rejected: ${reason}`);
+  }
 }
 
 export function handleExotelMediaStream(socket: WebSocket, hints: MediaStreamHints = {}) {
@@ -147,6 +161,7 @@ export function handleExotelMediaStream(socket: WebSocket, hints: MediaStreamHin
   let ending = false;
   let guard: CallGuard | null = null;
   let unregisterSession: (() => void) | null = null;
+  let releaseStreamClaim: (() => void) | null = null;
   let markCounter = 0;
   let malformedFrames = 0;
   /** The turn whose audio is being sent, so the sender can stamp "first audio byte" on it. */
@@ -541,6 +556,8 @@ export function handleExotelMediaStream(socket: WebSocket, hints: MediaStreamHin
     guard?.stop();
     unregisterSession?.();
     unregisterSession = null;
+    releaseStreamClaim?.();
+    releaseStreamClaim = null;
     playbackWaiters.forEach((done) => done());
     try {
       socket.close();
@@ -569,7 +586,7 @@ export function handleExotelMediaStream(socket: WebSocket, hints: MediaStreamHin
     // Not one of ours yet. If the DIALED number belongs to an agent this is an inbound call that arrived straight on
     // the media stream (no webhook announced it first): route it by number, exactly like the inbound webhook does.
     // An outbound call's `to` is the customer's number, which is not an agent's, so it falls through to the wait below.
-    if (start.to) {
+    if (start.to && getConfig().stream.inboundDirectAllowed) {
       try {
         return await callsService.startInboundCall({ dialedNumber: start.to, callerNumber: start.from, providerCallId: start.call_sid });
       } catch (err) {
@@ -583,7 +600,92 @@ export function handleExotelMediaStream(socket: WebSocket, hints: MediaStreamHin
       if (call) return call;
       await new Promise((r) => setTimeout(r, CALL_LOOKUP_DELAY_MS));
     }
+    // With direct inbound streams disabled an unknown call_sid is one no webhook or API flow ever registered.
+    if (!getConfig().stream.inboundDirectAllowed) throw new StreamRejectedError("unregistered_call_sid");
     throw new Error(`No call record for Exotel call_sid ${start.call_sid}`);
+  }
+
+  /**
+   * Binds the stream to the call it was authorised for. Runs for every connection, token or not:
+   *  - a token's call and organization must match the call record found (no call-id or tenant substitution);
+   *  - the provider's own call_sid must match the one recorded for the call, when both are known;
+   *  - the call must still be live (a finished call cannot be re-attached);
+   *  - only one stream per call at a time (a second connection cannot hijack or eavesdrop a live call).
+   */
+  async function assertStreamMayAttach(
+    call: { id: string; organizationId: string; status: string; callType?: string; createdAt?: Date | null; providerCallId?: string | null },
+    start: NonNullable<ExotelEvent["start"]>,
+  ) {
+    const scfg = getConfig().stream;
+    const claims = hints.streamClaims;
+    if (claims && (call.id !== claims.callId || call.organizationId !== claims.organizationId)) throw new StreamRejectedError("token_call_mismatch");
+    if (start.call_sid && call.providerCallId && start.call_sid !== call.providerCallId) throw new StreamRejectedError("provider_call_mismatch");
+    // A grant names exactly one provider call: the start event must carry that call_sid (no omission, no substitution).
+    if (hints.auth === "grant" && start.call_sid !== call.providerCallId) throw new StreamRejectedError("grant_call_sid_mismatch");
+    if (call.status === "completed" || call.status === "failed") throw new StreamRejectedError("call_not_live");
+
+    if (hints.auth) {
+      // A stream from a different Exotel account is never ours, whatever credential it carries.
+      const allowed = [...scfg.allowedAccountSids, ...(scfg.allowedAccountSids.length > 0 ? [getConfig().exotel.accountSid] : [])].filter(Boolean);
+      if (allowed.length > 0 && !(start.account_sid && allowed.includes(start.account_sid))) throw new StreamRejectedError("account_sid_not_allowed");
+    }
+    if (hints.auth === "static") {
+      // The shared secret proves nothing about THIS call, so the record itself must say it is waiting for its first
+      // stream, and recently: a finished/answered call cannot be re-attached and an old record cannot be revived.
+      if (scfg.staticRequirePendingStatus && call.status !== "initiating" && call.status !== "ringing") throw new StreamRejectedError("call_not_awaiting_stream");
+      const maxAge = call.callType === "inbound" ? scfg.inboundMaxAgeMs : scfg.flowMaxAgeMs;
+      if (call.createdAt && Date.now() - new Date(call.createdAt).getTime() > maxAge) throw new StreamRejectedError("registration_expired");
+    }
+
+    // Claimed synchronously in-process (fast path), then in PostgreSQL so another instance cannot attach a second
+    // stream either. A claim whose heartbeat went stale (crashed instance) is taken over.
+    const releaseLocal = lifecycle.claimStream(call.id);
+    if (!releaseLocal) {
+      metrics.inc("stream_claim_conflicts_total", { kind: "local" });
+      throw new StreamRejectedError("stream_already_attached");
+    }
+    let heldInDb = false;
+    try {
+      heldInDb = await streamClaimsRepository.claim({ callId: call.id, instanceId: lifecycle.instanceId, staleMs: scfg.claimStaleMs });
+    } catch (err) {
+      releaseLocal();
+      throw err; // cannot prove exclusivity: fail closed
+    }
+    if (!heldInDb) {
+      metrics.inc("stream_claim_conflicts_total", { kind: "db" });
+      releaseLocal();
+      throw new StreamRejectedError("stream_already_attached");
+    }
+    const callId = call.id;
+    const timer = setInterval(() => {
+      streamClaimsRepository
+        .heartbeat({ callId, instanceId: lifecycle.instanceId })
+        .then((still) => {
+          if (still || closed) return;
+          // Another instance took the claim over (we stalled past the stale window): yield without ending the call.
+          metrics.inc("stream_claim_conflicts_total", { kind: "lost" });
+          logger.warn("media-stream: stream claim lost to another instance, closing", logCtx());
+          callFinished = true;
+          closed = true;
+          try {
+            socket.close(1008, "claim lost");
+          } catch {
+            // already closing
+          }
+        })
+        .catch((err) => logger.warn("media-stream: claim heartbeat failed", { ...logCtx(), error: err instanceof Error ? err.message : String(err) }));
+    }, scfg.claimHeartbeatMs);
+    timer.unref?.();
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      clearInterval(timer);
+      releaseLocal();
+      void streamClaimsRepository.release({ callId, instanceId: lifecycle.instanceId }).catch(() => undefined); // stale expiry covers a failure
+    };
+    releaseStreamClaim = release;
+    if (closed) release(); // the socket dropped while the claim was being taken
   }
 
   async function onStart(parsed: ExotelEvent) {
@@ -603,6 +705,7 @@ export function handleExotelMediaStream(socket: WebSocket, hints: MediaStreamHin
     });
 
     const call = await resolveCall(start);
+    await assertStreamMayAttach(call, start);
     internalCallId = call.id;
     // The audio stream connecting means the customer picked up. Do not depend on a status callback to say so.
     try {
@@ -745,7 +848,26 @@ export function handleExotelMediaStream(socket: WebSocket, hints: MediaStreamHin
         logger.info("media-stream: connected event", logCtx());
         break;
       case "start":
-        void onStart(parsed).catch((err) => {
+        void onStart(parsed).catch(async (err) => {
+          if (err instanceof StreamRejectedError) {
+            logger.warn("media-stream: stream refused", { ...logCtx(), reason: err.reason });
+            metrics.inc("stream_auth_denied_total", { reason: err.reason }); // fixed reason codes only: bounded label set
+            closed = true;
+            // Recorded before the socket closes, so a refusal is always on the audit trail when the peer sees it.
+            await securityEvents
+              .record({
+                type: "access.stream_denied",
+                outcome: "denied",
+                metadata: { reason: err.reason, callId: internalCallId ?? hints.streamClaims?.callId },
+              })
+              .catch(() => undefined);
+            try {
+              socket.close(1008, "unauthorized");
+            } catch {
+              // already closing
+            }
+            return;
+          }
           logger.error("media-stream: failed to initialize conversation", {
             ...logCtx(),
             error: err instanceof Error ? err.message : String(err),
@@ -788,6 +910,8 @@ export function handleExotelMediaStream(socket: WebSocket, hints: MediaStreamHin
     guard?.stop();
     unregisterSession?.();
     unregisterSession = null;
+    releaseStreamClaim?.();
+    releaseStreamClaim = null;
     playbackWaiters.forEach((done) => done());
     logger.info("media-stream: closed", logCtx());
   });

@@ -17,6 +17,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { getConfig } from "../config/env.js";
+import { maskQueryCredentials } from "../shared/logger.js";
 
 function safeEqual(a: string, b: string): boolean {
   const ha = createHash("sha256").update(a).digest();
@@ -69,5 +70,5 @@ export function registerPublicAccessGuard(app: FastifyInstance): void {
 
 /** Removes the shared secret from a URL before it is logged. */
 export function redactUrl(url: string): string {
-  return url.replace(/([?&]token=)[^&]*/g, "$1[redacted]").replace(/(\/demo\/k\/)[^/?#]+/g, "$1[redacted]");
+  return maskQueryCredentials(url).replace(/(\/demo\/k\/)[^/?#]+/g, "$1[redacted]");
 }

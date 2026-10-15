@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { eq } from "drizzle-orm";
 import { buildApp } from "../../app.js";
-import { db } from "../../db/client.js";
+import { adminDb as db } from "../../db/client.js";
 import { sessions, users } from "../../db/schema.js";
 import { hashPassword, verifyPassword } from "../../auth/password.js";
 import { hashSessionToken } from "../../auth/session.service.js";
-import { usersRepository } from "../../db/repositories/users.repository.js";
+import { usersRepository } from "../../test/repos.js";
 
 type App = Awaited<ReturnType<typeof buildApp>>;
 
@@ -133,9 +133,10 @@ describe("login / session / logout", () => {
   it("throttles repeated failed logins for the same account and IP", async () => {
     await makeUser("throttle@example.test");
     const codes: number[] = [];
-    for (let i = 0; i < 12; i++) codes.push((await login("throttle@example.test", "bad-password-xyz", {}, "10.9.9.9")).statusCode);
-    expect(codes.slice(0, 10).every((c) => c === 401)).toBe(true);
-    expect(codes.slice(10)).toEqual([429, 429]);
+    for (let i = 0; i < 8; i++) codes.push((await login("throttle@example.test", "bad-password-xyz", {}, "10.9.9.9")).statusCode);
+    // The strict (account, IP) pair limit: 5 wrong passwords, then a bounded temporary lock (never a permanent one).
+    expect(codes.slice(0, 5).every((c) => c === 401)).toBe(true);
+    expect(codes.slice(5)).toEqual([429, 429, 429]);
     // A different IP is not affected.
     expect((await login("throttle@example.test", PASSWORD, {}, "10.8.8.8")).statusCode).toBe(200);
   });

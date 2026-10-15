@@ -13,7 +13,8 @@ import { loadEnv } from "../config/env.js";
 loadEnv();
 
 import { pathToFileURL } from "node:url";
-import { db, sql } from "../db/client.js";
+import { adminSql, db, sql } from "../db/client.js";
+import { runAsAdmin } from "../db/tenant-context.js";
 import { projectKnowledge, projects } from "../db/schema.js";
 import { knowledgeSchemas } from "../modules/projects/knowledge.schemas.js";
 
@@ -106,12 +107,13 @@ export async function backfillKnowledge() {
 
 // Run only when executed directly, not when imported by tests.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  backfillKnowledge()
+  runAsAdmin(() => backfillKnowledge())
     .catch((err) => {
       console.error("Backfill failed:", err instanceof Error ? err.message : "unknown error");
       process.exitCode = 1;
     })
     .finally(async () => {
       await sql.end();
+      await adminSql?.end();
     });
 }

@@ -1,5 +1,7 @@
 import { and, asc, eq, inArray, ne, sql, type SQL } from "drizzle-orm";
 import { db } from "../client.js";
+import { systemLookups } from "../system-lookups.js";
+import { runInTenant } from "../tenant-context.js";
 import { projects, projectKnowledge } from "../schema.js";
 import type { ProjectScope } from "../../auth/scope.js";
 import type { KnowledgeCategory } from "../../modules/projects/knowledge.schemas.js";
@@ -21,12 +23,16 @@ export const projectsRepository = {
    * (EXOTEL_DEMO_PROJECT_ID). Not for request-driven ids: callers that act for a user use findById with their org.
    */
   async findActiveByIdSystem(params: { id: string }) {
-    const rows = await db
-      .select()
-      .from(projects)
-      .where(and(eq(projects.id, params.id), eq(projects.status, "active")))
-      .limit(1);
-    return rows[0] ?? null;
+    const organizationId = await systemLookups.projectOrgById(params.id);
+    if (!organizationId) return null;
+    return runInTenant({ organizationId }, async () => {
+      const rows = await db
+        .select()
+        .from(projects)
+        .where(and(eq(projects.organizationId, organizationId), eq(projects.id, params.id), eq(projects.status, "active")))
+        .limit(1);
+      return rows[0] ?? null;
+    });
   },
 
   async findById(params: { organizationId: string; id: string; scope?: ProjectScope }) {

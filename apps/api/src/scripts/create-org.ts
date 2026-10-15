@@ -14,7 +14,8 @@ import { loadEnv } from "../config/env.js";
 loadEnv();
 
 import { pathToFileURL } from "node:url";
-import { db, sql } from "../db/client.js";
+import { adminSql, db, sql } from "../db/client.js";
+import { runAsAdmin } from "../db/tenant-context.js";
 import { agents, memberships, organizationModules, organizations, users } from "../db/schema.js";
 import { GENERIC_TOOL_NAMES } from "../modules/agents/agents.constants.js";
 import { DEFAULT_SALES_CONFIG, SALES_TOOL_NAMES } from "../modules/sales/sales-constants.js";
@@ -79,7 +80,8 @@ export async function createOrg(input: CreateOrgInput) {
   }
 
   // One transaction: no half-created organization if anything fails.
-  return db.transaction(async (tx) => {
+  // Provisioning an organization is an administrative act (the runtime role cannot create organizations).
+  return runAsAdmin(() => db.transaction(async (tx) => {
     const [org] = await tx.insert(organizations).values({ name, slug }).returning();
     let userId = existing?.id;
     if (!userId) {
@@ -120,7 +122,7 @@ export async function createOrg(input: CreateOrgInput) {
     }
     return {
       modules: [...modules], organizationId: org.id, slug, ownerUserId: userId, ownerEmail: email, ownerWasExisting: Boolean(existing) };
-  });
+  }));
 }
 
 function cliModulesArg(): string | undefined {
@@ -154,5 +156,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     })
     .finally(async () => {
       await sql.end();
+      await adminSql?.end();
     });
 }

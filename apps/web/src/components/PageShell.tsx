@@ -36,6 +36,14 @@ export function PageShell({
 
 /** Error panel for a failed server-side load; 403/404 get tailored copy. */
 export function LoadFailure({ err, what }: { err: unknown; what: string }) {
+  if (err instanceof ApiError && err.code === "MFA_ENROLLMENT_REQUIRED") {
+    return (
+      <ErrorState
+        title="Set up two-step verification"
+        message="Your role requires two-step verification before you can continue. Open Security in the top bar to set it up."
+      />
+    );
+  }
   if (err instanceof ApiError && err.status === 403 && /module/i.test(err.message)) {
     return <ModuleDisabled message={err.message} />;
   }

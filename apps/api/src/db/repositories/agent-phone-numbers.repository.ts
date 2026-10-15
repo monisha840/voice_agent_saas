@@ -1,5 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "../client.js";
+import { systemLookups } from "../system-lookups.js";
+import { runInTenant } from "../tenant-context.js";
 import { agentPhoneNumbers } from "../schema.js";
 
 export const agentPhoneNumbersRepository = {
@@ -8,8 +10,16 @@ export const agentPhoneNumbersRepository = {
    * unique, so this is unambiguous; the row carries the organization the call then belongs to.
    */
   async findByNumberAnyOrg(params: { phoneNumber: string }) {
-    const rows = await db.select().from(agentPhoneNumbers).where(eq(agentPhoneNumbers.phoneNumber, params.phoneNumber)).limit(1);
-    return rows[0] ?? null;
+    const organizationId = await systemLookups.phoneNumberOrg(params.phoneNumber);
+    if (!organizationId) return null;
+    return runInTenant({ organizationId }, async () => {
+      const rows = await db
+        .select()
+        .from(agentPhoneNumbers)
+        .where(and(eq(agentPhoneNumbers.organizationId, organizationId), eq(agentPhoneNumbers.phoneNumber, params.phoneNumber)))
+        .limit(1);
+      return rows[0] ?? null;
+    });
   },
 
   async listForAgent(params: { organizationId: string; agentId: string }) {

@@ -5,10 +5,10 @@ process.env.AI_PROVIDER = "mock";
 process.env.TELEPHONY_PROVIDER = "mock";
 
 import { buildApp } from "../../app.js";
-import { db } from "../../db/client.js";
+import { adminDb as db } from "../../db/client.js";
 import { auditLogs, agentConfigs } from "../../db/schema.js";
 import { userContext } from "../../auth/context.js";
-import { projectMembersRepository } from "../../db/repositories/project-members.repository.js";
+import { projectMembersRepository } from "../../test/repos.js";
 import { agentConfigService, DEFAULT_AGENT_CONFIG } from "./agent-config.service.js";
 import { buildSystemPrompt } from "../ai-agent/persona.js";
 import { cleanupTenants, createMember, createTenant, loginCookie, type TestTenant } from "../../test/tenants.js";

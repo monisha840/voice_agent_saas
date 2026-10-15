@@ -1,6 +1,8 @@
 import { and, eq, desc, gte, inArray, isNull, lt, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { db } from "../client.js";
-import { agents, calls, conversations, type callStatusEnum, type callTypeEnum } from "../schema.js";
+import { systemLookups } from "../system-lookups.js";
+import { runInTenant } from "../tenant-context.js";
+import { agents, calls, conversations, usageLedger, type callStatusEnum, type callTypeEnum } from "../schema.js";
 
 type CallStatus = (typeof callStatusEnum.enumValues)[number];
 export type CallType = (typeof callTypeEnum.enumValues)[number];
@@ -79,18 +81,26 @@ export const callsRepository = {
 
   /** SYSTEM ONLY: find a call by id without knowing its organization yet. */
   async findByIdAnyOrg(params: { id: string }) {
-    const rows = await db.select().from(calls).where(eq(calls.id, params.id)).limit(1);
-    return rows[0] ?? null;
+    const organizationId = await systemLookups.callOrgById(params.id);
+    if (!organizationId) return null;
+    return runInTenant({ organizationId }, async () => {
+      const rows = await db.select().from(calls).where(and(eq(calls.organizationId, organizationId), eq(calls.id, params.id))).limit(1);
+      return rows[0] ?? null;
+    });
   },
 
   /** SYSTEM ONLY: provider call ids are globally unique (unique index), so this is unambiguous. */
   async findByProviderCallIdAnyOrg(params: { providerCallId: string }) {
-    const rows = await db
-      .select()
-      .from(calls)
-      .where(eq(calls.providerCallId, params.providerCallId))
-      .limit(1);
-    return rows[0] ?? null;
+    const organizationId = await systemLookups.callOrgByProviderCallId(params.providerCallId);
+    if (!organizationId) return null;
+    return runInTenant({ organizationId }, async () => {
+      const rows = await db
+        .select()
+        .from(calls)
+        .where(and(eq(calls.organizationId, organizationId), eq(calls.providerCallId, params.providerCallId)))
+        .limit(1);
+      return rows[0] ?? null;
+    });
   },
 
   /**
@@ -157,17 +167,48 @@ export const callsRepository = {
    * under a limit. A limit of 0 means unlimited. Returns which limit blocked it instead of inserting.
    */
   async createWithinLimits(
-    params: NewCallParams & { maxConcurrent: number; maxPerDay: number; now?: Date },
-  ): Promise<{ call: typeof calls.$inferSelect } | { blocked: "concurrent" | "daily"; limit: number }> {
+    params: NewCallParams & {
+      maxConcurrent: number;
+      maxPerDay: number;
+      now?: Date;
+      /**
+       * Included-minute admission (billing). Evaluated under the SAME advisory lock as the concurrency count, so N
+       * parallel admissions are serialised: each sees every earlier admitted call as in flight. A call is refused when
+       *   usedSeconds(non-superseded ledger rows in [periodStart, periodEnd)) + inFlightCalls * reserveSecondsPerCall
+       *   >= includedSeconds.
+       * See docs/billing/README.md "Included-minute admission" for the permitted overshoot.
+       */
+      minutes?: { periodStart: Date; periodEnd: Date; includedSeconds: number; reserveSecondsPerCall: number };
+    },
+  ): Promise<{ call: typeof calls.$inferSelect } | { blocked: "concurrent" | "daily" | "minutes"; limit: number }> {
     const now = params.now ?? new Date();
     return db.transaction(async (tx) => {
       await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${params.organizationId}::text, 0))`);
-      if (params.maxConcurrent > 0) {
+      if (params.maxConcurrent > 0 || params.minutes) {
         const [row] = await tx
           .select({ n: sql<number>`count(*)::int` })
           .from(calls)
           .where(and(eq(calls.organizationId, params.organizationId), inArray(calls.status, ACTIVE_STATUSES)));
-        if (row.n >= params.maxConcurrent) return { blocked: "concurrent" as const, limit: params.maxConcurrent };
+        if (params.maxConcurrent > 0 && row.n >= params.maxConcurrent) {
+          return { blocked: "concurrent" as const, limit: params.maxConcurrent };
+        }
+        if (params.minutes) {
+          const m = params.minutes;
+          const [u] = await tx
+            .select({ s: sql<number>`coalesce(sum(${usageLedger.billableSeconds}), 0)::int` })
+            .from(usageLedger)
+            .where(
+              and(
+                eq(usageLedger.organizationId, params.organizationId),
+                sql`${usageLedger.state} <> 'superseded'`,
+                gte(usageLedger.occurredAt, m.periodStart),
+                lt(usageLedger.occurredAt, m.periodEnd),
+              ),
+            );
+          if (u.s + row.n * m.reserveSecondsPerCall >= m.includedSeconds) {
+            return { blocked: "minutes" as const, limit: Math.floor(m.includedSeconds / 60) };
+          }
+        }
       }
       if (params.maxPerDay > 0) {
         const [row] = await tx
@@ -247,17 +288,16 @@ export const callsRepository = {
    * calls running longer than `inProgressBefore`.
    */
   async listStaleAnyOrg(params: { pendingBefore: Date; inProgressBefore: Date }) {
-    return db
-      .select()
-      .from(calls)
-      .where(
-        or(
-          and(inArray(calls.status, ["initiating", "ringing"]), lt(calls.createdAt, params.pendingBefore)),
-          and(
-            eq(calls.status, "in_progress"),
-            sql`coalesce(${calls.startedAt}, ${calls.createdAt}) < ${params.inProgressBefore.toISOString()}::timestamptz`,
-          ),
-        ),
+    const refs = await systemLookups.staleCallRefs(params);
+    const byOrg = new Map<string, string[]>();
+    for (const ref of refs) byOrg.set(ref.organizationId, [...(byOrg.get(ref.organizationId) ?? []), ref.id]);
+    const found: Array<typeof calls.$inferSelect> = [];
+    for (const [organizationId, ids] of byOrg) {
+      const rows = await runInTenant({ organizationId }, async () =>
+        await db.select().from(calls).where(and(eq(calls.organizationId, organizationId), inArray(calls.id, ids))),
       );
+      found.push(...rows);
+    }
+    return found;
   },
 };

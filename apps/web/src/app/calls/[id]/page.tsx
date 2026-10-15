@@ -10,7 +10,8 @@ import { CallTypeBadge } from "@/components/CallTypeBadge";
 import { CallStatusBadge } from "@/components/CallStatusBadge";
 import { Card } from "@/components/ui";
 
-export default async function CallDetailPage({ params }: { params: { id: string } }) {
+export default async function CallDetailPage({ params: paramsPromise }: { params: Promise<{ id: string }> }) {
+  const params = await paramsPromise;
   try {
     const [call, me] = await Promise.all([api.getCall(params.id), api.me()]);
     const conversation = call.conversation;

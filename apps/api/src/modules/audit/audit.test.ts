@@ -7,11 +7,11 @@ process.env.AI_PROVIDER = "mock";
 process.env.TELEPHONY_PROVIDER = "mock";
 
 import { buildApp } from "../../app.js";
-import { db } from "../../db/client.js";
+import { adminDb as db } from "../../db/client.js";
 import { auditLogs } from "../../db/schema.js";
 import { userContext } from "../../auth/context.js";
 import { auditService, sanitizeMetadata } from "./audit.service.js";
-import { auditRepository } from "../../db/repositories/audit.repository.js";
+import { auditRepository } from "../../test/repos.js";
 import { cleanupTenants, createMember, createTenant, loginCookie, type TestTenant } from "../../test/tenants.js";
 
 let app: Awaited<ReturnType<typeof buildApp>>;

@@ -151,6 +151,22 @@ export class ForbiddenError extends Error {
   }
 }
 
+/**
+ * An authentication step is needed before this can proceed: re-enter the password, finish the second factor, enrol
+ * in MFA, or wait out a login throttle. `code` lets the client react precisely; `retryAfterSeconds` feeds Retry-After.
+ */
+export class AuthChallengeError extends Error {
+  constructor(
+    message: string,
+    public readonly code: "REAUTH_REQUIRED" | "MFA_REQUIRED" | "MFA_ENROLLMENT_REQUIRED" | "THROTTLED",
+    public readonly statusCode: 401 | 403 | 429 = code === "THROTTLED" ? 429 : code === "REAUTH_REQUIRED" ? 403 : code === "MFA_REQUIRED" ? 401 : 403,
+    public readonly retryAfterSeconds?: number,
+  ) {
+    super(message);
+    this.name = "AuthChallengeError";
+  }
+}
+
 /** The request conflicts with current state, e.g. a duplicate (409-shaped). */
 export class ConflictError extends Error {
   constructor(message: string) {
@@ -164,7 +180,22 @@ export class LimitExceededError extends Error {
   readonly statusCode = 429;
   constructor(
     message: string,
-    public readonly code: "CONCURRENT_CALL_LIMIT" | "DAILY_CALL_QUOTA" | "MONTHLY_CALL_SECONDS_QUOTA",
+    public readonly code:
+      | "CONCURRENT_CALL_LIMIT"
+      | "DAILY_CALL_QUOTA"
+      | "MONTHLY_CALL_SECONDS_QUOTA"
+      // Subscription entitlements (modules/billing/call-admission.ts): stable reason codes the dashboard explains.
+      | "TRIAL_EXPIRED"
+      | "SUBSCRIPTION_SUSPENDED"
+      | "SUBSCRIPTION_CANCELED"
+      | "SUBSCRIPTION_EXPIRED"
+      | "MINUTES_EXHAUSTED"
+      | "PLAN_UNAVAILABLE"
+      | "LIMITS_NOT_CONFIGURED"
+      | "STATE_UNAVAILABLE"
+      // Plan seat caps (migration 0020, translated by modules/billing/cap-errors.ts).
+      | "AGENT_LIMIT_REACHED"
+      | "TEAM_MEMBER_LIMIT_REACHED",
     public readonly retryAfterSeconds?: number,
   ) {
     super(message);
@@ -177,7 +208,7 @@ export class ServiceUnavailableError extends Error {
   readonly statusCode = 503;
   constructor(
     message: string,
-    public readonly code: "SHUTTING_DOWN" | "NOT_READY" = "NOT_READY",
+    public readonly code: "SHUTTING_DOWN" | "NOT_READY" | "RATE_LIMIT_UNAVAILABLE" = "NOT_READY",
   ) {
     super(message);
     this.name = "ServiceUnavailableError";

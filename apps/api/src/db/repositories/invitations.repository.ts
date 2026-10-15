@@ -1,5 +1,7 @@
 import { and, desc, eq, gt, isNull } from "drizzle-orm";
 import { db } from "../client.js";
+import { systemLookups } from "../system-lookups.js";
+import { runInTenant } from "../tenant-context.js";
 import { invitations, memberships, users } from "../schema.js";
 
 type OrgRole = (typeof invitations.$inferSelect)["role"];
@@ -22,19 +24,24 @@ export const invitationsRepository = {
 
   /** SYSTEM (public accept-invite endpoint): the token is the credential, so no organization is known yet. */
   async findUsableByTokenHashAnyOrg(params: { tokenHash: string; now: Date }) {
-    const rows = await db
-      .select()
-      .from(invitations)
-      .where(
-        and(
-          eq(invitations.tokenHash, params.tokenHash),
-          isNull(invitations.acceptedAt),
-          isNull(invitations.revokedAt),
-          gt(invitations.expiresAt, params.now),
-        ),
-      )
-      .limit(1);
-    return rows[0] ?? null;
+    const organizationId = await systemLookups.invitationOrgByTokenHash(params.tokenHash);
+    if (!organizationId) return null;
+    return runInTenant({ organizationId }, async () => {
+      const rows = await db
+        .select()
+        .from(invitations)
+        .where(
+          and(
+            eq(invitations.organizationId, organizationId),
+            eq(invitations.tokenHash, params.tokenHash),
+            isNull(invitations.acceptedAt),
+            isNull(invitations.revokedAt),
+            gt(invitations.expiresAt, params.now),
+          ),
+        )
+        .limit(1);
+      return rows[0] ?? null;
+    });
   },
 
   async listPending(params: { organizationId: string; now: Date }) {
@@ -92,7 +99,8 @@ export const invitationsRepository = {
     newUser?: { email: string; name: string; passwordHash: string };
     now: Date;
   }) {
-    return db.transaction(async (tx) => {
+    // The invitation (already verified by its token) fixes the organization this transaction may write to.
+    return runInTenant({ organizationId: params.invitation.organizationId }, () => db.transaction(async (tx) => {
       const claimed = await tx
         .update(invitations)
         .set({ acceptedAt: params.now })
@@ -117,7 +125,7 @@ export const invitationsRepository = {
       if (!userId) throw new Error("accept requires an existing or new user");
       await tx.insert(memberships).values({ organizationId: params.invitation.organizationId, userId, role: params.invitation.role });
       return { userId };
-    });
+    }));
   },
 
   async revoke(params: { organizationId: string; id: string }) {

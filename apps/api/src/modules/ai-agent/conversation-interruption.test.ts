@@ -10,7 +10,7 @@ process.env.AI_PROVIDER = "mock";
 import { ConversationSession } from "./conversation.js";
 import type { ChatMessage, ChatResult, ILanguageModel, ToolCallRequest, ToolDefinition } from "../../adapters/ai/llm.interface.js";
 import type { ProviderCallOptions } from "../../adapters/ai/provider-common.js";
-import { conversationsRepository } from "../../db/repositories/conversations.repository.js";
+import { conversationsRepository } from "../../test/repos.js";
 import { callsService } from "../calls/calls.service.js";
 import { defaultAgentIdFor } from "../../test/tenants.js";
 import { demoContext } from "../../test/helpers.js";

@@ -13,6 +13,7 @@ import { parseInput } from "../../shared/validation.js";
 import { assertCan, leadScopeFor, projectScopeFor } from "../../auth/access.js";
 import type { RequestContext } from "../../auth/context.js";
 import { auditService } from "../audit/audit.service.js";
+import { tenantScoped } from "../../auth/tenant-scoped.js";
 
 type LeadStatus = Parameters<typeof leadsRepository.updateStatus>[0]["status"];
 
@@ -82,7 +83,7 @@ async function requireActiveMember(ctx: RequestContext, userId: string) {
  * This is also where the LLM's access to lead data is mediated: see
  * ai-tools/update_lead.ts and mark_not_interested.ts (system context).
  */
-export const leadsService = {
+const leadsServiceImpl = {
   /** Filters apply after the access scope, so they can only narrow what the caller may see. */
   async listLeads(ctx: RequestContext, filters: LeadFilters = {}) {
     assertCan(ctx, "leads:read");
@@ -261,3 +262,5 @@ export const leadsService = {
     });
   },
 };
+
+export const leadsService = tenantScoped(leadsServiceImpl);

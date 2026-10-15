@@ -7,12 +7,12 @@ import { eq } from "drizzle-orm";
 
 process.env.AI_PROVIDER = "mock";
 
-import { db } from "../../db/client.js";
+import { adminDb as db } from "../../db/client.js";
 import { calls, leads } from "../../db/schema.js";
 import { projectsService } from "../projects/projects.service.js";
 import { callsService } from "./calls.service.js";
-import { conversationsRepository } from "../../db/repositories/conversations.repository.js";
-import { leadsRepository } from "../../db/repositories/leads.repository.js";
+import { conversationsRepository } from "../../test/repos.js";
+import { leadsRepository } from "../../test/repos.js";
 import { demoContext } from "../../test/helpers.js";
 import { defaultAgentIdFor } from "../../test/tenants.js";
 import type { RequestContext } from "../../auth/context.js";

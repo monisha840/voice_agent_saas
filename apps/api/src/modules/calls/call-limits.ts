@@ -19,6 +19,7 @@ import { usageRepository } from "../../db/repositories/usage.repository.js";
 import { getConfig, type AppConfig } from "../../config/env.js";
 import { LimitExceededError } from "../../shared/errors.js";
 import { lifecycle } from "../../runtime/lifecycle.js";
+import { callAdmission } from "../billing/call-admission.js";
 import { logger } from "../../shared/logger.js";
 
 export type OrgLimits = Pick<AppConfig["limits"], "maxConcurrentCallsPerOrg" | "maxCallsPerOrgPerDay" | "maxCallSecondsPerOrgPerMonth">;
@@ -55,16 +56,31 @@ export const callLimits = {
   async createCall(params: NewCallParams) {
     lifecycle.assertAcceptingCalls();
     const limits = await callLimits.limitsFor(params.organizationId);
+    // Subscription entitlements (plan status, included minutes, plan concurrency cap). Unmanaged organizations pass
+    // through unchanged. Throws LimitExceededError with a structured reason; fails closed if state is unreadable.
+    const admission = await callAdmission.admit(params.organizationId);
+    if (admission.maxConcurrentCalls !== null) {
+      const configured = limits.maxConcurrentCallsPerOrg;
+      limits.maxConcurrentCallsPerOrg = configured > 0 ? Math.min(configured, admission.maxConcurrentCalls) : admission.maxConcurrentCalls;
+    }
     await callLimits.assertWithinMonthlyQuota(params.organizationId, limits);
 
     const result = await callsRepository.createWithinLimits({
       ...params,
       maxConcurrent: limits.maxConcurrentCallsPerOrg,
       maxPerDay: limits.maxCallsPerOrgPerDay,
+      minutes: admission.minutes ?? undefined,
     });
     if ("call" in result) return result.call;
 
     logger.warn("call-limits: call refused", { organizationId: params.organizationId, callType: params.callType, limit: result.blocked });
+    if (result.blocked === "minutes") {
+      throw new LimitExceededError(
+        "This period's included minutes are used up or fully reserved by calls in progress. Try again when a call ends, upgrade, or wait for the next period.",
+        "MINUTES_EXHAUSTED",
+        15,
+      );
+    }
     if (result.blocked === "concurrent") {
       throw new LimitExceededError(
         `Too many calls in progress: this organization may have at most ${result.limit} at a time. Try again when one ends.`,

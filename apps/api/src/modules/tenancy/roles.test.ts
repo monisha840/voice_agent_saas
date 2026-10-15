@@ -10,7 +10,7 @@ process.env.AI_PROVIDER = "mock";
 process.env.TELEPHONY_PROVIDER = "mock";
 
 import { buildApp } from "../../app.js";
-import { db } from "../../db/client.js";
+import { adminDb as db } from "../../db/client.js";
 import { auditLogs, calls, leads, projectMembers, projects, siteVisits } from "../../db/schema.js";
 import { MockTelephonyProvider } from "../../adapters/telephony/mock.provider.js";
 import { setTelephonyProvider } from "../../adapters/telephony/index.js";

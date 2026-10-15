@@ -6,9 +6,11 @@ import { sessionService } from "../../auth/session.service.js";
 import { clearSessionCookie, setSessionCookie } from "../../auth/auth.plugin.js";
 import { usersRepository } from "../../db/repositories/users.repository.js";
 import { membershipsRepository } from "../../db/repositories/memberships.repository.js";
-import { ForbiddenError } from "../../shared/errors.js";
+import { AuthChallengeError, ForbiddenError } from "../../shared/errors.js";
 import { isPublicRequest } from "../../security/telephony-auth.js";
-import { logger } from "../../shared/logger.js";
+import { securityEvents } from "../../security/security-events.js";
+import { routeRateLimit } from "../../security/rate-limits.js";
+import { loginThrottle } from "../../auth/login-throttle.js";
 import { parseInput } from "../../shared/validation.js";
 import { usersService } from "../users/users.service.js";
 import { modulesService } from "../modules/modules.service.js";
@@ -39,37 +41,66 @@ export async function authRoutes(app: FastifyInstance) {
     "/api/auth/login",
     // Brute-force protection: 10 attempts per 15 minutes per IP + email.
     {
-      config: {
-        rateLimit: {
-          max: 10,
-          timeWindow: "15 minutes",
-          keyGenerator: (req: { ip: string; body?: unknown }) =>
-            `${req.ip}:${String((req.body as { email?: string } | undefined)?.email ?? "").toLowerCase()}`,
-        },
-      },
+      preHandler: routeRateLimit({
+        name: "login",
+        max: 10,
+        windowMs: 15 * 60_000,
+        key: (req) => `${req.ip}:${String((req.body as { email?: unknown } | undefined)?.email ?? "").slice(0, 320).toLowerCase()}`,
+      }),
     },
     async (req, reply) => {
     const { email, password } = parseInput(loginBody, req.body);
+    const ip = req.ip;
+    const userAgent = req.headers["user-agent"];
+
+    // Shared, bounded throttle (per account+IP, per IP, per account). A throttled attempt is refused before the
+    // password is checked and does not extend the lock.
+    const decision = await loginThrottle.check(email, ip);
+    if (!decision.allowed) {
+      await securityEvents.record({ type: "auth.login.throttled", outcome: "denied", ip, userAgent, metadata: { scope: decision.scope } });
+      throw new AuthChallengeError("Too many sign-in attempts. Please wait and try again.", "THROTTLED", 429, decision.retryAfterSec);
+    }
+
     const user = await usersRepository.findByEmail({ email });
     if (!user || !user.isActive) {
       await burnPasswordCheck(password);
-      logger.warn("auth: failed login", { reason: user ? "disabled" : "unknown_email" });
+      await loginThrottle.recordFailure(email, ip);
+      await securityEvents.record({
+        type: "auth.login.failed",
+        outcome: "failure",
+        userId: user?.id ?? null,
+        ip,
+        userAgent,
+        metadata: { reason: user ? "disabled" : "unknown_email" },
+      });
       return reply.status(401).send({ error: GENERIC_LOGIN_ERROR });
     }
     if (!(await verifyPassword(password, user.passwordHash))) {
-      logger.warn("auth: failed login", { reason: "bad_password", userId: user.id });
+      await loginThrottle.recordFailure(email, ip);
+      await securityEvents.record({ type: "auth.login.failed", outcome: "failure", userId: user.id, ip, userAgent, metadata: { reason: "bad_password" } });
       return reply.status(401).send({ error: GENERIC_LOGIN_ERROR });
     }
+    await loginThrottle.recordSuccess(email, ip);
     await usersRepository.touchLogin({ id: user.id });
     const orgs = await membershipsRepository.listForUser({ userId: user.id });
+    const mfaPending = !!user.mfaEnabledAt;
     const { token, expiresAt } = await sessionService.create({
       userId: user.id,
       activeOrganizationId: orgs[0]?.organizationId ?? null,
-      ipAddress: req.ip,
-      userAgent: req.headers["user-agent"],
+      ipAddress: ip,
+      userAgent,
+      mfaPending,
+    });
+    await securityEvents.record({
+      type: mfaPending ? "auth.login.mfa_required" : "auth.login.success",
+      outcome: mfaPending ? "info" : "success",
+      userId: user.id,
+      organizationId: orgs[0]?.organizationId ?? null,
+      ip,
+      userAgent,
     });
     setSessionCookie(reply, token, expiresAt);
-    return reply.send({ data: { id: user.id, email: user.email, name: user.name } });
+    return reply.send({ data: { id: user.id, email: user.email, name: user.name, mfaRequired: mfaPending } });
     },
   );
 
@@ -94,9 +125,10 @@ export async function authRoutes(app: FastifyInstance) {
       activeOrganizationId: orgs[0]?.organizationId ?? null,
       ipAddress: req.ip,
       userAgent: req.headers["user-agent"],
+      mfaPending: !!user.mfaEnabledAt,
     });
     setSessionCookie(reply, token, expiresAt);
-    return reply.send({ data: { id: user.id, email: user.email, name: user.name } });
+    return reply.send({ data: { id: user.id, email: user.email, name: user.name, mfaRequired: !!user.mfaEnabledAt } });
   });
 
   /**
@@ -105,25 +137,29 @@ export async function authRoutes(app: FastifyInstance) {
    */
   app.post(
     "/api/auth/accept-invite",
-    { config: { rateLimit: { max: 10, timeWindow: "15 minutes", keyGenerator: (req: { ip: string }) => req.ip } } },
+    { preHandler: routeRateLimit({ name: "accept-invite", max: 10, windowMs: 15 * 60_000, key: (req) => req.ip }) },
     async (req, reply) => {
       const body = parseInput(acceptInviteBody, req.body);
       const { user, organizationId } = await usersService.acceptInvite(body);
       await usersRepository.touchLogin({ id: user.id });
+      const mfaPending = !!user.mfaEnabledAt;
       const { token, expiresAt } = await sessionService.create({
         userId: user.id,
         activeOrganizationId: organizationId,
         ipAddress: req.ip,
         userAgent: req.headers["user-agent"],
+        mfaPending,
       });
+      await securityEvents.record({ type: mfaPending ? "auth.login.mfa_required" : "auth.login.success", outcome: mfaPending ? "info" : "success", userId: user.id, organizationId, ip: req.ip, userAgent: req.headers["user-agent"], metadata: { via: "invitation" } });
       setSessionCookie(reply, token, expiresAt);
-      return reply.send({ data: { id: user.id, email: user.email, name: user.name } });
+      return reply.send({ data: { id: user.id, email: user.email, name: user.name, mfaRequired: mfaPending } });
     },
   );
 
   app.post("/api/auth/logout",async (req, reply) => {
     const token = req.cookies?.[getConfig().auth.cookieName];
     if (token) await sessionService.revoke(token);
+    if (req.auth) await securityEvents.record({ type: "auth.logout", outcome: "success", userId: req.auth.userId, ip: req.ip });
     clearSessionCookie(reply);
     return reply.send({ data: { ok: true } });
   });
@@ -136,7 +172,19 @@ export async function authRoutes(app: FastifyInstance) {
     // Enabled optional modules of the ACTIVE organization (the Voice AI core is always on).
     const organization = active ? { ...active, modules: await modulesService.enabledKeys({ organizationId: active.id }) } : null;
     return reply.send({
-      data: { id: a.userId, email: a.email, name: a.name, organization, organizations: a.organizations },
+      data: {
+        id: a.userId,
+        email: a.email,
+        name: a.name,
+        organization,
+        organizations: a.organizations,
+        security: {
+          mfaEnabled: a.mfaEnabled,
+          mfaPending: a.mfaPending,
+          mfaEnrollmentRequired: a.mfaEnrollmentRequired,
+          mfaEnforcement: getConfig().auth.mfa.enforcement,
+        },
+      },
     });
   });
 

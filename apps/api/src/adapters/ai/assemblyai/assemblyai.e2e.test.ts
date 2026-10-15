@@ -17,7 +17,7 @@ import { systemContext } from "../../../auth/context.js";
 import { setTelephonyProvider } from "../../telephony/index.js";
 import { setSttProvider } from "../index.js";
 import { encodeMockSpeech } from "../mock.stt.provider.js";
-import { conversationsRepository } from "../../../db/repositories/conversations.repository.js";
+import { conversationsRepository } from "../../../test/repos.js";
 import { lifecycle } from "../../../runtime/lifecycle.js";
 import { cleanupTenants, createDefaultAgent, createTenant, type TestTenant } from "../../../test/tenants.js";
 import { relaxRateLimits, startTestApp } from "../../../test/agent-first.js";

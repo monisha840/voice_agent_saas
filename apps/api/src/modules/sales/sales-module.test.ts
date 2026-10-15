@@ -5,11 +5,11 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { and, eq } from "drizzle-orm";
 
-import { db } from "../../db/client.js";
+import { adminDb as db } from "../../db/client.js";
 import { organizationModules } from "../../db/schema.js";
 import { systemContext } from "../../auth/context.js";
 import { executeTool } from "../../ai-tools/index.js";
-import { callsRepository } from "../../db/repositories/calls.repository.js";
+import { callsRepository } from "../../test/repos.js";
 import { callRuntime } from "../calls/call-runtime.js";
 import { ConversationSession } from "../ai-agent/conversation.js";
 import type { ChatMessage, ILanguageModel, ToolDefinition } from "../../adapters/ai/llm.interface.js";

@@ -33,6 +33,7 @@ import type {
   TelephonyStatusCallbackPayload,
 } from "./telephony.interface.js";
 import { getConfig } from "../../config/env.js";
+import { issueStreamToken } from "../../security/stream-token.js";
 import { ProviderConfigError, ProviderRequestError } from "../../shared/errors.js";
 import { logger, redact } from "../../shared/logger.js";
 
@@ -87,7 +88,7 @@ export class ExotelProvider implements ITelephonyProvider {
    * Builds the exact form body for Calls/connect. Pure (no I/O) so tests
    * can assert the request shape without credentials or network.
    */
-  buildConnectRequest(params: InitiateCallParams): URLSearchParams {
+  buildConnectRequest(params: InitiateCallParams, streamToken?: string): URLSearchParams {
     const exotel = this.assertConfigured();
     const base = exotel.webhookBaseUrl.replace(/\/+$/, "");
     const qs = new URLSearchParams({
@@ -106,7 +107,14 @@ export class ExotelProvider implements ITelephonyProvider {
       // holds our wss:// URL, so none is sent here; the media stream finds this call by Exotel's call_sid.
       body.set("Url", `${exotel.flowUrlBase}/${exotel.accountSid}/exoml/start_voice/${exotel.flowAppId}`);
     } else {
-      body.set("StreamUrl", `${base.replace(/^https/i, "wss")}/api/telephony/exotel/media-stream?${qs}`);
+      // The media stream is authenticated by a per-call, short-lived signed token (security/stream-token.ts) that
+      // names this call and organization. The shared webhook secret stays on the status-callback URL above (that is
+      // webhook authentication, a separate mechanism); it is repeated here only while STREAM_ALLOW_STATIC_SECRET is
+      // on, as a compatibility fallback for a peer that drops the token. Set it to false to make the token mandatory.
+      if (!streamToken) throw new ProviderConfigError("exotel", "A stream token is required to build a StreamUrl");
+      const streamQs = new URLSearchParams({ st: streamToken });
+      if (getConfig().stream.allowStaticSecret) streamQs.set("token", exotel.agentStreamWebhookSecret);
+      body.set("StreamUrl", `${base.replace(/^https/i, "wss")}/api/telephony/exotel/media-stream?${streamQs.toString()}`);
       body.set("StreamType", "bidirectional");
     }
     body.append("StatusCallbackEvents[0]", "terminal");
@@ -117,7 +125,12 @@ export class ExotelProvider implements ITelephonyProvider {
 
   async initiateCall(params: InitiateCallParams): Promise<InitiateCallResult> {
     const exotel = this.assertConfigured();
-    const body = this.buildConnectRequest(params);
+    let streamToken: string | undefined;
+    if (!exotel.flowAppId) {
+      if (!params.organizationId) throw new ProviderConfigError("exotel", "organizationId is required to issue a stream token");
+      streamToken = (await issueStreamToken({ callId: params.internalCallId, organizationId: params.organizationId, provider: "exotel" })).token;
+    }
+    const body = this.buildConnectRequest(params, streamToken);
     const url = `https://${exotel.subdomain}/v1/Accounts/${exotel.accountSid}/Calls/connect.json`;
     const auth = Buffer.from(`${exotel.apiKey}:${exotel.apiToken}`).toString("base64");
 

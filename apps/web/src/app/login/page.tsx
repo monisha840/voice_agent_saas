@@ -1,9 +1,10 @@
 import { AudioLines } from "lucide-react";
 import { LoginForm } from "./LoginForm";
 
-export default function LoginPage({ searchParams }: { searchParams: { next?: string } }) {
+export default async function LoginPage({ searchParams }: { searchParams: Promise<{ next?: string }> }) {
+  const query = await searchParams;
   // Only allow same-site relative redirects after login.
-  const next = searchParams.next && searchParams.next.startsWith("/") && !searchParams.next.startsWith("//") ? searchParams.next : "/";
+  const next = query.next && query.next.startsWith("/") && !query.next.startsWith("//") ? query.next : "/";
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-stone-50 px-6">

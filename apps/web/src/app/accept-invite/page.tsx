@@ -1,7 +1,8 @@
 import { Building2 } from "lucide-react";
 import { AcceptInviteForm } from "./AcceptInviteForm";
 
-export default function AcceptInvitePage({ searchParams }: { searchParams: { token?: string } }) {
+export default async function AcceptInvitePage({ searchParams }: { searchParams: Promise<{ token?: string }> }) {
+  const { token } = await searchParams;
   return (
     <main className="flex min-h-screen items-center justify-center bg-stone-50 px-6">
       <div className="w-full max-w-sm rounded-lg border border-stone-200 bg-white p-8 shadow-sm">
@@ -14,7 +15,7 @@ export default function AcceptInvitePage({ searchParams }: { searchParams: { tok
             <div className="text-xs text-stone-500">Accept your invitation</div>
           </div>
         </div>
-        <AcceptInviteForm token={searchParams.token ?? ""} />
+        <AcceptInviteForm token={token ?? ""} />
       </div>
     </main>
   );

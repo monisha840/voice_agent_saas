@@ -77,10 +77,36 @@ export interface AuthOrganization {
   modules?: string[];
 }
 
+export interface SessionInfo {
+  id: string;
+  current: boolean;
+  createdAt: string;
+  lastSeenAt: string;
+  expiresAt: string;
+  ip: string | null;
+  device: string;
+  mfaVerified: boolean;
+}
+
+export interface MfaStatus {
+  enabled: boolean;
+  enrolledAt: string | null;
+  recoveryCodesRemaining: number;
+  enforcement: "off" | "warn" | "enforce";
+}
+
 export interface AuthUser {
   id: string;
   email: string;
   name: string;
+  /** Login only: the password was right but a second factor is still needed. */
+  mfaRequired?: boolean;
+  security?: {
+    mfaEnabled: boolean;
+    mfaPending: boolean;
+    mfaEnrollmentRequired: boolean;
+    mfaEnforcement: "off" | "warn" | "enforce";
+  };
   /** The organization this session is working in (null if the user has none). */
   organization?: AuthOrganization | null;
   organizations?: AuthOrganization[];
@@ -148,6 +174,9 @@ export function createApi(getExtraHeaders: HeaderProvider = () => ({})) {
     createWebCall: (input: { agentId?: string; leadId?: string }) =>
       send<{ callId: string; agentId: string; sampleRate: number }>("POST", "/api/calls/web", input),
     listSiteVisits: () => request<SiteVisitRow[]>("/api/site-visits"),
+    /** Plays a short sample in a voice. A voice name the provider does not know is an error (no silent fallback). */
+    previewVoice: (voice: string, language?: string) =>
+      send<{ voice: string; languageCode: string; audioBase64: string; format: string }>("POST", "/api/agents/voice-preview", { voice, ...(language ? { language } : {}) }),
     /** Open follow-ups the agent noted for the team (human requested, callback, info requested, do not call). */
     listFollowUps: () => request<FollowUpQueueItem[]>("/api/follow-ups"),
     completeFollowUp: (id: string) => send<FollowUp>("POST", `/api/follow-ups/${id}/done`),
@@ -174,9 +203,6 @@ export function createApi(getExtraHeaders: HeaderProvider = () => ({})) {
       send<unknown>("DELETE", `/api/agents/${id}/phone-numbers/${numberId}`),
     listTools: () => request<ToolInfo[]>("/api/tools"),
     // The calls list returns top-level data + nextBefore, so it bypasses the data-unwrapping helper.
-    /** Plays a short sample in a voice. A voice name the provider does not know is an error (no silent fallback). */
-    previewVoice: (voice: string, language?: string) =>
-      send<{ voice: string; languageCode: string; audioBase64: string; format: string }>("POST", "/api/agents/voice-preview", { voice, ...(language ? { language } : {}) }),
     listCalls: async (opts: {
         limit?: number;
         before?: string | null;
@@ -204,6 +230,20 @@ export function createApi(getExtraHeaders: HeaderProvider = () => ({})) {
     demoLogin: () => request<AuthUser>("/api/auth/demo-login", { method: "POST" }),
     logout: () => request<{ ok: true }>("/api/auth/logout", { method: "POST" }),
     me: () => request<AuthUser>("/api/auth/me"),
+    // --- account security ---
+    listSessions: () => request<SessionInfo[]>("/api/auth/sessions"),
+    revokeSession: (id: string) => send<{ revoked: string; current: boolean }>("DELETE", `/api/auth/sessions/${id}`),
+    revokeOtherSessions: () => send<{ revoked: number }>("POST", "/api/auth/sessions/revoke-others"),
+    reauthenticate: (password: string) => send<{ ok: true }>("POST", "/api/auth/reauthenticate", { password }),
+    changePassword: (currentPassword: string, newPassword: string) =>
+      send<{ ok: true; otherSessionsRevoked: number }>("POST", "/api/auth/change-password", { currentPassword, newPassword }),
+    mfaStatus: () => request<MfaStatus>("/api/auth/mfa"),
+    mfaEnroll: () => send<{ secret: string; otpauthUri: string; qrDataUrl: string }>("POST", "/api/auth/mfa/enroll"),
+    mfaConfirm: (code: string) => send<{ recoveryCodes: string[] }>("POST", "/api/auth/mfa/enroll/confirm", { code }),
+    mfaVerify: (input: { code?: string; recoveryCode?: string }) =>
+      send<{ ok: true; method?: "totp" | "recovery" }>("POST", "/api/auth/mfa/verify", input),
+    mfaRecoveryCodes: (code: string) => send<{ recoveryCodes: string[] }>("POST", "/api/auth/mfa/recovery-codes", { code }),
+    mfaDisable: (password: string, code: string) => send<{ ok: true }>("POST", "/api/auth/mfa/disable", { password, code }),
     switchOrganization: (organizationId: string) =>
       send<unknown>("POST", "/api/auth/switch-organization", { organizationId }),
     acceptInvite: (token: string, name: string, password: string) =>

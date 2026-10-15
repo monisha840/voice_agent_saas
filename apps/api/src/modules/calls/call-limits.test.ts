@@ -2,6 +2,7 @@
  * Cost and abuse protection: per-organization concurrent-call limit, daily call quota, monthly call-seconds quota,
  * atomic under parallel requests, tenant-aware, fail-safe, and never touching calls that are already running.
  */
+import { callsRepository as realCallsRepository } from "../../db/repositories/calls.repository.js";
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
 import { and, eq, inArray } from "drizzle-orm";
 
@@ -10,12 +11,12 @@ process.env.TELEPHONY_PROVIDER = "mock";
 process.env.EXOTEL_AGENTSTREAM_WEBHOOK_SECRET = "";
 process.env.MOCK_TELEPHONY_AUTOPLAY = "false";
 
-import { db } from "../../db/client.js";
+import { adminDb as db } from "../../db/client.js";
 import { calls } from "../../db/schema.js";
 import { systemContext } from "../../auth/context.js";
 import { setTelephonyProvider } from "../../adapters/telephony/index.js";
-import { callsRepository } from "../../db/repositories/calls.repository.js";
-import { usageRepository } from "../../db/repositories/usage.repository.js";
+import { callsRepository } from "../../test/repos.js";
+import { usageRepository } from "../../test/repos.js";
 import { LimitExceededError, ServiceUnavailableError } from "../../shared/errors.js";
 import { lifecycle } from "../../runtime/lifecycle.js";
 import { cleanupTenants, createDefaultAgent, createTenant, loginCookie, type TestTenant } from "../../test/tenants.js";
@@ -238,7 +239,7 @@ describe("fail-safe", () => {
   it("if the limit check itself fails the call is NOT created (fail closed, never fail open)", async () => {
     const provider = new CapturingProvider();
     setTelephonyProvider(provider);
-    vi.spyOn(callsRepository, "createWithinLimits").mockRejectedValue(new Error("could not count active calls"));
+    vi.spyOn(realCallsRepository, "createWithinLimits").mockRejectedValue(new Error("could not count active calls"));
     const before = (await db.select().from(calls).where(eq(calls.organizationId, A.orgId))).length;
     const res = await http(cookieA, "POST", "/api/calls", { agentId: agentA, callType: "outbound", toNumber: "+919000055555" });
     expect(res.status).toBe(500);

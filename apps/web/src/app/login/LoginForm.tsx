@@ -11,8 +11,18 @@ export function LoginForm({ next }: { next: string }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [demoEnabled, setDemoEnabled] = useState(false);
+  // Second factor step: the password was accepted but the account has two-step verification.
+  const [secondFactor, setSecondFactor] = useState(false);
+  const [code, setCode] = useState("");
+  const [useRecovery, setUseRecovery] = useState(false);
 
   useEffect(() => {
+    api
+      .me()
+      .then((u) => {
+        if (u.security?.mfaPending) setSecondFactor(true);
+      })
+      .catch(() => undefined);
     api
       .authConfig()
       .then((c) => setDemoEnabled(c.demoLoginEnabled))
@@ -23,7 +33,12 @@ export function LoginForm({ next }: { next: string }) {
     setBusy(true);
     setError(null);
     try {
-      await action();
+      const result = (await action()) as { mfaRequired?: boolean } | undefined;
+      if (result?.mfaRequired) {
+        setSecondFactor(true);
+        setBusy(false);
+        return;
+      }
       // The browser must actually have kept the session cookie; if it dropped it
       // (e.g. page and API opened on different hosts) say so instead of looping.
       await api.me().catch(() => {
@@ -41,6 +56,59 @@ export function LoginForm({ next }: { next: string }) {
       );
       setBusy(false);
     }
+  }
+
+  if (secondFactor) {
+    return (
+      <form
+        className="space-y-4"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void run(() => api.mfaVerify(useRecovery ? { recoveryCode: code.trim() } : { code: code.trim() }));
+        }}
+      >
+        <p className="text-sm text-stone-600">
+          {useRecovery
+            ? "Enter one of your recovery codes. Each can be used once."
+            : "Enter the 6-digit code from your authenticator app."}
+        </p>
+        <label className="block text-sm">
+          <span className="mb-1 block font-medium text-stone-700">{useRecovery ? "Recovery code" : "Verification code"}</span>
+          <input
+            required
+            autoFocus
+            inputMode={useRecovery ? "text" : "numeric"}
+            autoComplete="one-time-code"
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+            className="w-full rounded-md border border-stone-300 px-3 py-2 text-sm focus:border-emerald-600 focus:outline-none"
+          />
+        </label>
+        {error && (
+          <p role="alert" className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
+            {error}
+          </p>
+        )}
+        <button
+          type="submit"
+          disabled={busy}
+          className="w-full rounded-md bg-emerald-700 px-3 py-2 text-sm font-medium text-white transition hover:bg-emerald-800 disabled:opacity-60"
+        >
+          {busy ? "Verifying…" : "Verify"}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setUseRecovery((r) => !r);
+            setCode("");
+            setError(null);
+          }}
+          className="w-full text-center text-sm text-stone-600 underline"
+        >
+          {useRecovery ? "Use my authenticator app instead" : "Use a recovery code instead"}
+        </button>
+      </form>
+    );
   }
 
   return (

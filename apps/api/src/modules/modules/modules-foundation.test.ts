@@ -4,9 +4,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { inArray } from "drizzle-orm";
 
-import { db } from "../../db/client.js";
+import { adminDb as db } from "../../db/client.js";
 import { agents, memberships, organizationModules, organizations, users } from "../../db/schema.js";
-import { organizationModulesRepository } from "../../db/repositories/organization-modules.repository.js";
+import { organizationModulesRepository } from "../../test/repos.js";
 import { cleanupTenants, createTenant } from "../../test/tenants.js";
 import { createOrg, parseModules } from "../../scripts/create-org.js";
 import { DEFAULT_NEW_ORG_MODULES, MODULE_KEYS, isModuleKey } from "./module-registry.js";
@@ -58,9 +58,10 @@ describe("migration 0006 backfill", () => {
     expect(insert).toContain("ON CONFLICT");
 
     const legacy = await createTenant("Legacy", { modules: [] }); // an org that predates the table
-    const { sql } = await import("../../db/client.js");
-    await sql.unsafe(insert);
-    await sql.unsafe(insert); // re-running is harmless
+    // A migration runs as the administrative (owner) role, not as the restricted runtime role.
+    const { adminSql } = await import("../../db/client.js");
+    await adminSql!.unsafe(insert);
+    await adminSql!.unsafe(insert); // re-running is harmless
     const rows = await organizationModulesRepository.listForOrganization({ organizationId: legacy.orgId });
     expect(rows.map((r) => [r.moduleKey, r.enabled])).toEqual([["sales", true]]);
   });

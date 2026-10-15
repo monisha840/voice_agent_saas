@@ -18,3 +18,13 @@ infra/docker/pgdata/
 
 # STT benchmark audio fixtures (may contain real voices / PII; never commit)
 apps/api/bench-audio/
+
+# Playwright browser e2e output (run artefacts, screenshots on failure)
+test-results/
+playwright-report/
+blob-report/
+
+# Database dumps / backups and their checksums (may contain tenant data; never commit)
+db-backups/
+*.dump
+*.dump.sha256

@@ -6,7 +6,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { ConversationSession } from "./conversation.js";
 import { fallbackLine } from "./fallback-lines.js";
 import type { ChatMessage, ChatResult, ILanguageModel, ToolDefinition } from "../../adapters/ai/llm.interface.js";
-import { callsRepository } from "../../db/repositories/calls.repository.js";
+import { callsRepository } from "../../test/repos.js";
 import { cleanupTenants, createTenant } from "../../test/tenants.js";
 import type { ToolExecutionContext } from "../../ai-tools/types.js";
 

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { and, eq } from "drizzle-orm";
 
 import { buildApp } from "../../app.js";
-import { db } from "../../db/client.js";
+import { adminDb as db } from "../../db/client.js";
 import { auditLogs } from "../../db/schema.js";
 import { cleanupTenants, createTenant, loginCookie, type TestTenant } from "../../test/tenants.js";
 

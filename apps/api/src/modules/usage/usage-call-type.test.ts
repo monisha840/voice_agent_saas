@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { eq } from "drizzle-orm";
 
-import { db } from "../../db/client.js";
+import { adminDb as db } from "../../db/client.js";
 import { calls, usageEvents } from "../../db/schema.js";
 import { systemContext, userContext } from "../../auth/context.js";
 import { cleanupTenants, createTenant, type TestTenant } from "../../test/tenants.js";

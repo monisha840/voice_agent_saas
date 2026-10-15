@@ -8,6 +8,7 @@ import { parseInput } from "../../shared/validation.js";
 import { auditService } from "../audit/audit.service.js";
 import { projectsRepository } from "../../db/repositories/projects.repository.js";
 import { projectScopeFor } from "../../auth/access.js";
+import { tenantScoped } from "../../auth/tenant-scoped.js";
 
 const MAX_NOTE = 500;
 
@@ -25,7 +26,7 @@ export type RecordFollowUpInput = z.input<typeof recordSchema>;
  * What the team must do after a call, as the agent noted it. Written during the call (by the request_follow_up tool,
  * with a system context confined to the call's organization) and worked through by people from the dashboard.
  */
-export const followUpsService = {
+const followUpsServiceImpl = {
   /**
    * Records a follow-up. The same kind recorded twice by one call is one follow-up (the model may ask twice): the later
    * note and time replace the earlier. A do_not_call request also marks the lead DNC.
@@ -103,3 +104,5 @@ export const followUpsService = {
     return done;
   },
 };
+
+export const followUpsService = tenantScoped(followUpsServiceImpl);

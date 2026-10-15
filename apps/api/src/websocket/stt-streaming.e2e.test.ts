@@ -19,7 +19,7 @@ import { ReliableSpeechToText } from "../adapters/ai/reliable-providers.js";
 import { MockSttProvider, encodeMockSpeech } from "../adapters/ai/mock.stt.provider.js";
 import type { ISpeechToText, SttStreamHandlers, SttStreamingSession, SttStreamOptions } from "../adapters/ai/stt.interface.js";
 import { ProviderRequestError } from "../shared/errors.js";
-import { conversationsRepository } from "../db/repositories/conversations.repository.js";
+import { conversationsRepository } from "../test/repos.js";
 import { lifecycle } from "../runtime/lifecycle.js";
 import { cleanupTenants, createDefaultAgent, createTenant, type TestTenant } from "../test/tenants.js";
 import { relaxRateLimits, startTestApp } from "../test/agent-first.js";

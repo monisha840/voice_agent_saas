@@ -10,7 +10,7 @@ process.env.TELEPHONY_PROVIDER = "mock";
 process.env.EXOTEL_AGENTSTREAM_WEBHOOK_SECRET = "";
 process.env.MOCK_TELEPHONY_AUTOPLAY = "false";
 
-import { db } from "../../db/client.js";
+import { adminDb as db } from "../../db/client.js";
 import { calls, usageEvents } from "../../db/schema.js";
 import { systemContext } from "../../auth/context.js";
 import { setTelephonyProvider } from "../../adapters/telephony/index.js";

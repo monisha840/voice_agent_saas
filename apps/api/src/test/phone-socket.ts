@@ -19,11 +19,13 @@ export interface PhoneSocket {
 
 export async function openPhone(
   baseUrl: string,
-  opts: { callSid: string; internalCallId?: string; to?: string; from?: string; token?: string },
+  opts: { callSid: string; internalCallId?: string; to?: string; from?: string; token?: string; streamToken?: string; grant?: string; accountSid?: string },
 ): Promise<PhoneSocket> {
   const params = new URLSearchParams();
   if (opts.internalCallId) params.set("internalCallId", opts.internalCallId);
   if (opts.token) params.set("token", opts.token);
+  if (opts.streamToken) params.set("st", opts.streamToken);
+  if (opts.grant) params.set("g", opts.grant);
   const qs = params.toString();
   const ws = new WebSocket(`${baseUrl.replace(/^http/, "ws")}/api/telephony/exotel/media-stream${qs ? `?${qs}` : ""}`);
   const t0 = Date.now();
@@ -61,7 +63,7 @@ export async function openPhone(
       start: {
         stream_sid: streamSid,
         call_sid: opts.callSid,
-        account_sid: "test-account",
+        account_sid: opts.accountSid ?? "test-account",
         ...(opts.from ? { from: opts.from } : {}),
         ...(opts.to ? { to: opts.to } : {}),
         media_format: { encoding: "pcm_s16le", sample_rate: "8000", bit_rate: "128kbps" },

@@ -6,24 +6,27 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "typecheck": "tsc --noEmit",
-    "lint": "next lint"
+    "typecheck": "next typegen && tsc --noEmit",
+    "lint": "next lint",
+    "e2e": "node e2e/run.mjs",
+    "e2e:billing": "node e2e/billing-run.mjs"
   },
   "dependencies": {
-    "next": "^14.2.5",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "lucide-react": "^0.446.0"
+    "lucide-react": "^0.446.0",
+    "next": "^15.5.27",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.0",
     "@types/node": "^20.14.0",
-    "@types/react": "^18.3.3",
-    "@types/react-dom": "^18.3.0",
-    "typescript": "^5.5.4",
-    "tailwindcss": "^3.4.7",
-    "postcss": "^8.4.40",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "autoprefixer": "^10.4.19",
     "eslint": "^8.57.0",
-    "eslint-config-next": "^14.2.5"
+    "eslint-config-next": "^15.5.27",
+    "postcss": "^8.5.30",
+    "tailwindcss": "^3.4.7",
+    "typescript": "^5.5.4"
   }
 }

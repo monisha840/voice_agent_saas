@@ -5,7 +5,8 @@ import { can } from "@/lib/permissions";
 import { ErrorState, ModuleDisabled } from "@/components/StateViews";
 import { LeadDetailClient } from "./LeadDetailClient";
 
-export default async function LeadDetailPage({ params }: { params: { id: string } }) {
+export default async function LeadDetailPage({ params: paramsPromise }: { params: Promise<{ id: string }> }) {
+  const params = await paramsPromise;
   try {
     const lead = await api.getLead(params.id);
     const role = (await api.me().catch(() => null))?.organization?.role ?? null;

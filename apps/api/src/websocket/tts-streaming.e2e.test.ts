@@ -16,7 +16,7 @@ process.env.REALTIME_LLM_STREAMING = "true";
 process.env.REALTIME_TTS_STREAMING = "true";
 
 import { buildApp } from "../app.js";
-import { db } from "../db/client.js";
+import { adminDb as db } from "../db/client.js";
 import { leads } from "../db/schema.js";
 import { MockTelephonyProvider } from "../adapters/telephony/mock.provider.js";
 import { setTelephonyProvider } from "../adapters/telephony/index.js";

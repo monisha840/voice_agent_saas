@@ -4,7 +4,8 @@ import { LoadFailure, PageShell } from "@/components/PageShell";
 import type { ProjectMember, TeamMember } from "@/lib/types";
 import { ProjectDetailClient } from "./ProjectDetailClient";
 
-export default async function ProjectDetailPage({ params }: { params: { id: string } }) {
+export default async function ProjectDetailPage({ params: paramsPromise }: { params: Promise<{ id: string }> }) {
+  const params = await paramsPromise;
   try {
     const [me, project] = await Promise.all([api.me(), api.getProject(params.id)]);
     const role = me.organization?.role ?? null;

@@ -154,7 +154,11 @@ describe("streaming reply: chunks, assembly and history", () => {
     const s = sessionFor(llm);
     const early: string[] = [];
     const done = s.handleUserUtterance("price?", { onTextChunk: (c) => void early.push(c.text) });
-    await new Promise((r) => setTimeout(r, 20));
+    // handleUserUtterance first persists the caller's turn (a database round trip), so the first chunk arrives after a
+    // variable delay. Wait for the EVENT, not for a fixed time: the property under test is that the chunk is delivered
+    // while the model's tail is still withheld (releaseTail has not been called), which this still asserts exactly.
+    const deadline = Date.now() + 5000;
+    while (early.length === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5));
     expect(early).toEqual(["The price starts at a good value."]); // delivered before completion
     releaseTail();
     const turn = await done;

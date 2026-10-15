@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { eq } from "drizzle-orm";
 
-import { db } from "../../db/client.js";
+import { adminDb as db } from "../../db/client.js";
 import { calls, projects, siteVisits } from "../../db/schema.js";
 import { executeTool } from "../../ai-tools/index.js";
 import { callRuntime } from "../calls/call-runtime.js";
@@ -13,8 +13,8 @@ import { siteVisitsService } from "../site-visits/site-visits.service.js";
 import { ConversationSession } from "../ai-agent/conversation.js";
 import type { ChatResult, ILanguageModel } from "../../adapters/ai/llm.interface.js";
 import { systemContext } from "../../auth/context.js";
-import { callsRepository } from "../../db/repositories/calls.repository.js";
-import { leadsRepository } from "../../db/repositories/leads.repository.js";
+import { callsRepository } from "../../test/repos.js";
+import { leadsRepository } from "../../test/repos.js";
 import { cleanupTenants, createTenant, type TestTenant } from "../../test/tenants.js";
 import { salesCallHooks } from "./sales-call-hooks.js";
 

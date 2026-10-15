@@ -1,0 +1,367 @@
+# promtool unit tests for alert-rules.yml (synthetic series, no real Prometheus involved).
+# Run from this directory:   promtool test rules alert-rules.test.yml
+# Annotations are copied verbatim from alert-rules.yml; if you edit a summary/action there, update it here too
+# (promtool compares annotations exactly). Series use job="voice-agent-api", instance="api-1:3001".
+# STATUS: written but NOT executed in this repository's review (promtool was not available). See
+# docs/security/monitoring-deployment.md section 4.
+rule_files:
+  - alert-rules.yml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    name: RateLimitStoreFailOpen fires on a fail-open burst and is quiet without one
+    input_series:
+      - series: rate_limit_fail_open_total{job="voice-agent-api",instance="api-1:3001"}
+        values: 0 0 0 3 3 3 3 3 3 3 3 3 3 3 3 3
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: RateLimitStoreFailOpen
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: RateLimitStoreFailOpen
+        exp_alerts:
+          - exp_labels:
+              instance: api-1:3001
+              severity: warning
+            exp_annotations:
+              summary: Rate limiting failed open (requests served without limits)
+              action: Check PostgreSQL health and the rate_limit_buckets table/grants; consider RATE_LIMIT_FAIL_MODE=closed during an attack.
+      - eval_time: 12m
+        alertname: RateLimitStoreFailOpen
+        exp_alerts: []
+  - interval: 1m
+    name: RateLimitStoreFailOpenSustained needs a full 10 minutes of ongoing failures, a single burst never fires
+    input_series:
+      - series: rate_limit_fail_open_total{job="voice-agent-api",instance="api-1:3001"}
+        values: 0+1x30
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: RateLimitStoreFailOpenSustained
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: RateLimitStoreFailOpenSustained
+        exp_alerts:
+          - exp_labels:
+              instance: api-1:3001
+              severity: critical
+            exp_annotations:
+              summary: Rate limiting has been failing open continuously for 10 minutes
+              action: 'Database or rate_limit_buckets is down for a sustained period: per-IP protection is off. Restore the store or set RATE_LIMIT_FAIL_MODE=closed.'
+  - interval: 1m
+    name: RateLimitStoreFailOpenSustained stays quiet for one burst
+    input_series:
+      - series: rate_limit_fail_open_total{job="voice-agent-api",instance="api-1:3001"}
+        values: 0 0 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: RateLimitStoreFailOpenSustained
+        exp_alerts: []
+  - interval: 1m
+    name: RateLimitStoreErrors fires above 5 errors in 5 minutes
+    input_series:
+      - series: rate_limit_backend_errors_total{job="voice-agent-api",instance="api-1:3001",mode="closed"}
+        values: 0+2x20
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: RateLimitStoreErrors
+        exp_alerts:
+          - exp_labels:
+              instance: api-1:3001
+              severity: critical
+            exp_annotations:
+              summary: Rate-limit counter store is erroring (logins may be returning 503)
+              action: Database unreachable or rate_limit_buckets broken. Check /ready and database logs.
+  - interval: 1m
+    name: StreamAuthDenialSpike fires on > 20 denials in 10 minutes
+    input_series:
+      - series: stream_auth_denied_total{job="voice-agent-api",instance="api-1:3001",reason="token_expired"}
+        values: 0+3x20
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: StreamAuthDenialSpike
+        exp_alerts:
+          - exp_labels:
+              instance: api-1:3001
+              severity: warning
+            exp_annotations:
+              summary: Many media stream authentication denials
+              action: 'Group by reason: token_* means token key/expiry problems, grant_* grant problems, unauthorized/token_required missing credentials.'
+  - interval: 1m
+    name: StreamTokenIntegrityDenials fires for signature failures but not for expired tokens
+    input_series:
+      - series: stream_auth_denied_total{job="voice-agent-api",instance="api-1:3001",reason="token_bad_signature"}
+        values: 0+1x20
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: StreamTokenIntegrityDenials
+        exp_alerts:
+          - exp_labels:
+              instance: api-1:3001
+              severity: critical
+            exp_annotations:
+              summary: Stream tokens failing signature or claim validation
+              action: >-
+                Key rotation not propagated to all instances, a wrong stream key set, or forged tokens. Compare key sets across instances and read
+                access.stream_denied events.
+  - interval: 1m
+    name: StreamTokenIntegrityDenials ignores naturally expiring tokens
+    input_series:
+      - series: stream_auth_denied_total{job="voice-agent-api",instance="api-1:3001",reason="token_expired"}
+        values: 0+1x20
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: StreamTokenIntegrityDenials
+        exp_alerts: []
+  - interval: 1m
+    name: StreamReplayDenials fires on repeated grant reuse
+    input_series:
+      - series: stream_auth_denied_total{job="voice-agent-api",instance="api-1:3001",reason="grant_reused"}
+        values: 0+1x20
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: StreamReplayDenials
+        exp_alerts:
+          - exp_labels:
+              instance: api-1:3001
+              severity: warning
+            exp_annotations:
+              summary: Stream token or grant replays refused
+              action: 'A one-time grant/token was presented again: provider retry storm or replay attempt. Review access.stream_denied events by call.'
+  - interval: 1m
+    name: StreamClaimConflicts fires per kind, summed across instances
+    input_series:
+      - series: stream_claim_conflicts_total{job="voice-agent-api",instance="api-1:3001",kind="lost"}
+        values: 0+1x30
+      - series: stream_claim_conflicts_total{job="voice-agent-api",instance="api-2:3001",kind="lost"}
+        values: 0+1x30
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: StreamClaimConflicts
+        exp_alerts:
+          - exp_labels:
+              kind: lost
+              severity: warning
+            exp_annotations:
+              summary: Media stream claim conflicts
+              action: Check load-balancer routing of the stream WebSocket and instance pauses (GC / CPU starvation). kind=lost means another instance took the claim.
+  - interval: 1m
+    name: DbAuthorizationErrors fires on any permission / RLS error
+    input_series:
+      - series: db_authorization_errors_total{job="voice-agent-api",instance="api-1:3001"}
+        values: 0 0 0 1 1 1 1 1 1 1
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: DbAuthorizationErrors
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: DbAuthorizationErrors
+        exp_alerts:
+          - exp_labels:
+              instance: api-1:3001
+              severity: critical
+            exp_annotations:
+              summary: Database permission / row-level-security errors
+              action: Find the failing route in error logs (message contains permission denied / row-level security). Do not grant BYPASSRLS.
+  - interval: 1m
+    name: DbRuntimeRoleUnsafe fires while the problem gauge is non-zero
+    input_series:
+      - series: db_runtime_role_problems{job="voice-agent-api",instance="api-1:3001"}
+        values: 2 2 2 2
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: DbRuntimeRoleUnsafe
+        exp_alerts:
+          - exp_labels:
+              job: voice-agent-api
+              instance: api-1:3001
+              severity: critical
+            exp_annotations:
+              summary: Runtime database role failed the startup safety check
+              action: Connect as the restricted runtime role (docs/security/rls-rollout.md).
+  - interval: 1m
+    name: DbRuntimeRoleUnsafe is quiet when healthy
+    input_series:
+      - series: db_runtime_role_problems{job="voice-agent-api",instance="api-1:3001"}
+        values: 0 0 0 0
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: DbRuntimeRoleUnsafe
+        exp_alerts: []
+  - interval: 1m
+    name: DbRoleCheckFailed fires on a bare non-zero counter (set once at startup)
+    input_series:
+      - series: db_role_check_failures_total{job="voice-agent-api",instance="api-1:3001",kind="inspect_error"}
+        values: 1 1 1 1
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: DbRoleCheckFailed
+        exp_alerts:
+          - exp_labels:
+              instance: api-1:3001
+              severity: critical
+            exp_annotations:
+              summary: Startup database role check found problems or could not run
+              action: Read the startup log for the role report; kind=inspect_error means the check could not query the role (db_runtime_role_problems may stay 0).
+  - interval: 1m
+    name: SecurityEventRetentionFailing fires on one failed retention run
+    input_series:
+      - series: security_event_retention_errors_total{job="voice-agent-api",instance="api-1:3001"}
+        values: 0 0 1 1 1 1
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: SecurityEventRetentionFailing
+        exp_alerts:
+          - exp_labels:
+              instance: api-1:3001
+              severity: warning
+            exp_annotations:
+              summary: security_events retention job failed
+              action: Inspect DB privileges and the app_purge_security_events function; see the janitor error log line.
+  - interval: 1m
+    name: SecurityEventPersistFailing fires when an audit write fails
+    input_series:
+      - series: security_event_persist_failures_total{job="voice-agent-api",instance="api-1:3001"}
+        values: 0 0 1 1 1 1
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: SecurityEventPersistFailing
+        exp_alerts:
+          - exp_labels:
+              instance: api-1:3001
+              severity: critical
+            exp_annotations:
+              summary: Security events could not be persisted
+              action: 'Recover events from the log line ''security-events: FAILED TO PERSIST'' and fix the database write path.'
+  - interval: 1m
+    name: SecurityJanitorFailing counts cleanup failures only
+    input_series:
+      - series: security_janitor_failures_total{job="voice-agent-api",instance="api-1:3001",task="cleanup"}
+        values: 0+1x20
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: SecurityJanitorFailing
+        exp_alerts:
+          - exp_labels:
+              instance: api-1:3001
+              severity: warning
+            exp_annotations:
+              summary: Security janitor cleanup keeps failing
+              action: Sessions, throttle rows, stream tokens and rate-limit buckets are not being cleaned; check the cleanup failed log line.
+  - interval: 1m
+    name: SecurityJanitorFailing ignores retention-task failures (own rule)
+    input_series:
+      - series: security_janitor_failures_total{job="voice-agent-api",instance="api-1:3001",task="retention"}
+        values: 0+1x20
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: SecurityJanitorFailing
+        exp_alerts: []
+  - interval: 1m
+    name: SecurityJanitorStale fires for a process that never succeeded (gauge 0) after an hour of uptime
+    input_series:
+      - series: security_janitor_last_success_timestamp_seconds{job="voice-agent-api",instance="api-1:3001"}
+        values: 0+0x80
+      - series: process_start_time_seconds{job="voice-agent-api",instance="api-1:3001"}
+        values: 0+0x80
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SecurityJanitorStale
+        exp_alerts: []
+      - eval_time: 70m
+        alertname: SecurityJanitorStale
+        exp_alerts:
+          - exp_labels:
+              job: voice-agent-api
+              instance: api-1:3001
+              severity: warning
+            exp_annotations:
+              summary: Security janitor has not completed a cleanup in over an hour
+              action: Is the janitor running on this instance? Look for hung database connections.
+  - interval: 1m
+    name: SecurityJanitorStale is quiet when the last success is recent
+    input_series:
+      - series: security_janitor_last_success_timestamp_seconds{job="voice-agent-api",instance="api-1:3001"}
+        values: 4100+0x80
+      - series: process_start_time_seconds{job="voice-agent-api",instance="api-1:3001"}
+        values: 0+0x80
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: SecurityJanitorStale
+        exp_alerts: []
+  - interval: 1m
+    name: LoginThrottleSpike fires on > 30 throttled logins in 10 minutes
+    input_series:
+      - series: auth_throttle_denied_total{job="voice-agent-api",instance="api-1:3001",kind="login"}
+        values: 0+4x20
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: LoginThrottleSpike
+        exp_alerts:
+          - exp_labels:
+              instance: api-1:3001
+              severity: warning
+            exp_annotations:
+              summary: Many throttled login attempts
+              action: Review auth.login.throttled security events by scope; consider blocking the source at the edge.
+  - interval: 1m
+    name: MfaThrottleSpike fires on > 10 throttled MFA attempts in 10 minutes
+    input_series:
+      - series: auth_throttle_denied_total{job="voice-agent-api",instance="api-1:3001",kind="mfa"}
+        values: 0+2x20
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: MfaThrottleSpike
+        exp_alerts:
+          - exp_labels:
+              instance: api-1:3001
+              severity: warning
+            exp_annotations:
+              summary: Many throttled MFA attempts
+              action: A password is likely known to an attacker. Review auth.mfa.throttled events; force resets for affected accounts.
+  - interval: 1m
+    name: MetricsTargetDown fires after 5 minutes of failed scrapes
+    input_series:
+      - series: up{job="voice-agent-api",instance="api-1:3001"}
+        values: 1 1 0 0 0 0 0 0 0 0 0 0 0 0
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: MetricsTargetDown
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: MetricsTargetDown
+        exp_alerts:
+          - exp_labels:
+              job: voice-agent-api
+              instance: api-1:3001
+              severity: critical
+            exp_annotations:
+              summary: An API instance cannot be scraped (metrics and every other alert are blind)
+              action: Instance down, METRICS_TOKEN mismatch (401), scrape hostname missing from API_PRIVATE_HOSTS (404) or network path broken.
+  - interval: 1m
+    name: ApiRestartLoop fires on three process-start changes in 30 minutes
+    input_series:
+      - series: process_start_time_seconds{job="voice-agent-api",instance="api-1:3001"}
+        values: 100 100 200 200 300 300 400 400
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: ApiRestartLoop
+        exp_alerts:
+          - exp_labels:
+              job: voice-agent-api
+              instance: api-1:3001
+              severity: warning
+            exp_annotations:
+              summary: API process restarted more than twice in 30 minutes
+              action: Crash loop or repeated deploys. Increments just before a crash can be invisible.
+  - interval: 1m
+    name: Watchdog always fires
+    input_series: []
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: Watchdog
+        exp_alerts:
+          - exp_labels:
+              severity: none
+            exp_annotations:
+              summary: 'Watchdog: the alerting pipeline is evaluating rules (always firing by design)'
+              action: None. Act if this alert STOPS arriving at the heartbeat receiver.

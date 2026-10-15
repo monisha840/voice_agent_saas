@@ -5,11 +5,11 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { and, eq } from "drizzle-orm";
 
-import { db } from "../../db/client.js";
+import { adminDb as db } from "../../db/client.js";
 import { agentKnowledgeBindings, leads, organizationModules, projects } from "../../db/schema.js";
 import { systemContext } from "../../auth/context.js";
 import { ALL_TOOL_NAMES } from "../../ai-tools/index.js";
-import { callsRepository } from "../../db/repositories/calls.repository.js";
+import { callsRepository } from "../../test/repos.js";
 import { buildSystemPrompt } from "../ai-agent/persona.js";
 import { agentsService } from "../agents/agents.service.js";
 import { cleanupTenants, createDefaultAgent, createTenant, type TestTenant } from "../../test/tenants.js";

@@ -1,3 +1,4 @@
+import { isUniqueViolation } from "../../db/pg-error.js";
 import { assertCan } from "../../auth/access.js";
 import type { RequestContext } from "../../auth/context.js";
 import { agentPhoneNumbersRepository } from "../../db/repositories/agent-phone-numbers.repository.js";
@@ -5,6 +6,7 @@ import { agentsRepository } from "../../db/repositories/agents.repository.js";
 import { ConflictError, NotFoundError, ValidationError } from "../../shared/errors.js";
 import { normalizeIndianMobile } from "../../shared/phone.js";
 import { auditService } from "../audit/audit.service.js";
+import { tenantScoped } from "../../auth/tenant-scoped.js";
 
 /** E.164 for Indian mobiles we can normalize, otherwise the digits as given (international numbers). */
 export function normalizeRoutingNumber(input: string): string {
@@ -24,7 +26,7 @@ async function requireAgent(ctx: RequestContext, agentId: string) {
 }
 
 /** Which numbers an agent answers (inbound routing). Provider-agnostic: no telephony provider is involved here. */
-export const agentPhoneNumbersService = {
+const agentPhoneNumbersServiceImpl = {
   async list(ctx: RequestContext, params: { agentId: string }) {
     assertCan(ctx, "agents:read");
     await requireAgent(ctx, params.agentId);
@@ -50,7 +52,7 @@ export const agentPhoneNumbersService = {
       });
       return row;
     } catch (err) {
-      if ((err as { code?: string }).code === "23505") throw new ConflictError("That number is already assigned to an agent");
+      if (isUniqueViolation(err)) throw new ConflictError("That number is already assigned to an agent");
       throw err;
     }
   },
@@ -68,3 +70,5 @@ export const agentPhoneNumbersService = {
     });
   },
 };
+
+export const agentPhoneNumbersService = tenantScoped(agentPhoneNumbersServiceImpl);

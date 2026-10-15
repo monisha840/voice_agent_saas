@@ -4,6 +4,7 @@ import { hasModule } from "@/lib/modules";
 import type { UsageSummary } from "@/lib/types";
 import { ErrorState } from "@/components/StateViews";
 import { LoadFailure, PageShell } from "@/components/PageShell";
+import Link from "next/link";
 import { Notice } from "@/components/ui";
 import { UsageTiles } from "@/components/UsageTiles";
 
@@ -21,7 +22,15 @@ export default async function UsagePage() {
     const from = new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000);
     const usage = await api.usageSummary(from.toISOString(), to.toISOString()).catch((): UsageSummary | null => null);
     return (
-      <PageShell title="Usage" subtitle="Calls, minutes and AI replies for the last 30 days.">
+      <PageShell
+        title="Usage"
+        subtitle="Calls, minutes and AI replies for the last 30 days."
+        actions={
+          <Link href="/billing" className="text-sm font-medium text-emerald-700 hover:text-emerald-800">
+            Plan &amp; billing
+          </Link>
+        }
+      >
         {usage ? (
           <UsageTiles usage={usage} showSiteVisits={hasModule(me.organization, "sales")} />
         ) : (

@@ -4,9 +4,9 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { eq } from "drizzle-orm";
-import { db } from "../../db/client.js";
+import { adminDb as db } from "../../db/client.js";
 import { leads } from "../../db/schema.js";
-import { callsRepository } from "../../db/repositories/calls.repository.js";
+import { callsRepository } from "../../test/repos.js";
 import { executeTool } from "../../ai-tools/index.js";
 import type { ToolExecutionContext } from "../../ai-tools/types.js";
 import { userContext, type RequestContext } from "../../auth/context.js";

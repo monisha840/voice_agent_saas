@@ -5,12 +5,12 @@ process.env.AI_PROVIDER = "mock";
 process.env.TELEPHONY_PROVIDER = "mock";
 
 import { buildApp } from "../../app.js";
-import { db } from "../../db/client.js";
+import { adminDb as db } from "../../db/client.js";
 import { agentConfigs, agentKnowledgeBindings, agents, calls } from "../../db/schema.js";
 import { userContext } from "../../auth/context.js";
-import { leadsRepository } from "../../db/repositories/leads.repository.js";
-import { projectsRepository } from "../../db/repositories/projects.repository.js";
-import { callsRepository } from "../../db/repositories/calls.repository.js";
+import { leadsRepository } from "../../test/repos.js";
+import { projectsRepository } from "../../test/repos.js";
+import { callsRepository } from "../../test/repos.js";
 import { callsService } from "../calls/calls.service.js";
 import { callRuntime } from "../calls/call-runtime.js";
 import { cleanupTenants, createTenant, loginCookie, type TestTenant } from "../../test/tenants.js";

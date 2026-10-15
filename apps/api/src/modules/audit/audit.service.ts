@@ -17,16 +17,21 @@
 import { auditRepository } from "../../db/repositories/audit.repository.js";
 import type { RequestContext } from "../../auth/context.js";
 import { assertCan } from "../../auth/access.js";
-import { logger } from "../../shared/logger.js";
+import { logger, scrubString } from "../../shared/logger.js";
+import { tenantScoped } from "../../auth/tenant-scoped.js";
 
-const SECRET_KEY = /pass(word)?|token|secret|hash|authorization|cookie|api[-_]?key|credential/i;
+const SECRET_KEY = /pass(word)?|token|secret|hash|authorization|cookie|api[-_]?key|credential|grant(?!ed)|^st$|^g$/i;
 const MAX_STRING = 500;
 const MAX_DEPTH = 4;
 
 /** Removes secret-looking keys, truncates long strings, bounds depth. Pure and exported for tests. */
 export function sanitizeMetadata(value: unknown, depth = 0): unknown {
   if (value === null || value === undefined) return value ?? null;
-  if (typeof value === "string") return value.length > MAX_STRING ? `${value.slice(0, MAX_STRING)}…` : value;
+  // Scrubbed BEFORE truncation so a credential cut in half is not left behind; URLs/headers pasted into a value are masked.
+  if (typeof value === "string") {
+    const clean = scrubString(value);
+    return clean.length > MAX_STRING ? `${clean.slice(0, MAX_STRING)}…` : clean;
+  }
   if (typeof value === "number" || typeof value === "boolean") return value;
   if (value instanceof Date) return value.toISOString();
   if (depth >= MAX_DEPTH) return "[truncated]";
@@ -49,7 +54,7 @@ export interface AuditEvent {
   ipAddress?: string;
 }
 
-export const auditService = {
+const auditServiceImpl = {
   async record(ctx: RequestContext, event: AuditEvent): Promise<void> {
     try {
       await auditRepository.insert({
@@ -83,3 +88,5 @@ export const auditService = {
     return { data, nextBefore: hasMore ? data[data.length - 1].createdAt.toISOString() : null };
   },
 };
+
+export const auditService = tenantScoped(auditServiceImpl);

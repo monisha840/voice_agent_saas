@@ -15,6 +15,7 @@ import type { RequestContext } from "../../auth/context.js";
 import { assertCan } from "../../auth/access.js";
 import { logger } from "../../shared/logger.js";
 import { ValidationError } from "../../shared/errors.js";
+import { tenantScoped } from "../../auth/tenant-scoped.js";
 
 export const MAX_RANGE_DAYS = 366;
 const DAY_MS = 86_400_000;
@@ -52,7 +53,7 @@ export function resolveRange(input: { from?: string; to?: string }, now = new Da
 type Totals = { calls: number; callSeconds: number; aiTurns: number; siteVisits: number };
 const TOTAL_KEY = { call: "calls", call_seconds: "callSeconds", ai_turn: "aiTurns", site_visit: "siteVisits" } as const;
 
-export const usageService = {
+const usageServiceImpl = {
   /** Records one booked site visit. Idempotent; never throws (usage must not fail the business action). */
   async recordSiteVisit(ctx: RequestContext, visit: { id: string; leadId: string; projectId: string }) {
     try {
@@ -129,3 +130,5 @@ export const usageService = {
     };
   },
 };
+
+export const usageService = tenantScoped(usageServiceImpl);

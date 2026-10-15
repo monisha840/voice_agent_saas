@@ -1,3 +1,4 @@
+import { isUniqueViolation as isPgUniqueViolation } from "../../db/pg-error.js";
 import { db } from "../../db/client.js";
 import { agentsRepository, type AgentRow, type AgentValues } from "../../db/repositories/agents.repository.js";
 import { assertCan } from "../../auth/access.js";
@@ -24,6 +25,7 @@ import {
   updateAgentSchema,
   type UpdateAgentInput,
 } from "./agents.validation.js";
+import { tenantScoped } from "../../auth/tenant-scoped.js";
 
 export interface AgentJson {
   id: string;
@@ -108,8 +110,7 @@ async function assertTemplateModuleEnabled(ctx: RequestContext, templateKey: str
 }
 
 function isUniqueViolation(err: unknown): boolean {
-  const e = err as { code?: string; cause?: { code?: string } } | null;
-  return e?.code === "23505" || e?.cause?.code === "23505";
+  return isPgUniqueViolation(err);
 }
 
 const userIdOf = (ctx: RequestContext) => (ctx.actor.type === "user" ? ctx.actor.userId : null);
@@ -147,7 +148,7 @@ export interface AgentOption {
   status: string;
 }
 
-export const agentsService = {
+const agentsServiceImpl = {
   async list(ctx: RequestContext, query: unknown) {
     assertCan(ctx, "agents:read");
     const { includeArchived } = parseInput(listAgentsQuerySchema, query);
@@ -354,3 +355,5 @@ export const agentsService = {
     return present(ctx, (await agentsRepository.findById({ organizationId: ctx.organizationId, id })) ?? agent);
   },
 };
+
+export const agentsService = tenantScoped(agentsServiceImpl);

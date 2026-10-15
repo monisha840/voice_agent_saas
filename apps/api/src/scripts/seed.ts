@@ -15,7 +15,8 @@ loadEnv();
 
 import { pathToFileURL } from "node:url";
 import { and, eq } from "drizzle-orm";
-import { db, sql } from "../db/client.js";
+import { adminSql, db, sql } from "../db/client.js";
+import { runAsAdmin } from "../db/tenant-context.js";
 import {
   projects,
   projectKnowledge,
@@ -359,12 +360,13 @@ export async function runSeed() {
 
 // Run only when executed directly (pnpm db:seed), not when imported by test setup.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  runSeed()
+  runAsAdmin(() => runSeed())
     .catch((err) => {
       console.error("Seed failed:", err);
       process.exitCode = 1;
     })
     .finally(async () => {
       await sql.end();
+      await adminSql?.end();
     });
 }

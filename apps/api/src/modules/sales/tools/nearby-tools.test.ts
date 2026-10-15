@@ -4,9 +4,9 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { eq } from "drizzle-orm";
-import { db } from "../../../db/client.js";
+import { adminDb as db } from "../../../db/client.js";
 import { followUps } from "../../../db/schema.js";
-import { followUpsRepository } from "../../../db/repositories/follow-ups.repository.js";
+import { followUpsRepository } from "../../../test/repos.js";
 import { executeTool } from "../../../ai-tools/index.js";
 import { projectsService } from "../../projects/projects.service.js";
 import { callsService } from "../../calls/calls.service.js";

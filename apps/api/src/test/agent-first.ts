@@ -15,8 +15,8 @@ import type {
   TelephonyStatusCallbackPayload,
 } from "../adapters/telephony/telephony.interface.js";
 import { callsService } from "../modules/calls/calls.service.js";
-import { callsRepository } from "../db/repositories/calls.repository.js";
-import { conversationsRepository } from "../db/repositories/conversations.repository.js";
+import { callsRepository } from "./repos.js";
+import { conversationsRepository } from "./repos.js";
 import type { SimulationReport } from "../simulator/call-simulator.js";
 
 /** Quiet the per-org / per-IP throttles that would otherwise trip when one file places many calls. */

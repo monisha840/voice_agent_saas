@@ -3,6 +3,7 @@
  * core call code is here: validating a lead before dialing, choosing the agent for a lead's project, describing
  * the lead and project to the agent, and updating the lead as the call progresses and ends.
  */
+import { tenantScoped } from "../../auth/tenant-scoped.js";
 import { and, eq, exists, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import { assertCan, leadScopeFor } from "../../auth/access.js";
 import type { LeadScope } from "../../auth/scope.js";
@@ -63,7 +64,7 @@ export function describeBudget(min: number | null, max: number | null): string |
   return null;
 }
 
-export const salesCallHooks: CallHooks = {
+const salesCallHooksImpl: CallHooks = {
   name: "sales",
 
   async pickAgentForLead(ctx, { leadId }) {
@@ -162,3 +163,5 @@ export const salesCallHooks: CallHooks = {
     return ids.length === 1 ? ids[0] : null;
   },
 };
+
+export const salesCallHooks: CallHooks = tenantScoped(salesCallHooksImpl);

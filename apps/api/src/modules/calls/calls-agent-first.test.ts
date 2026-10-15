@@ -13,13 +13,13 @@ process.env.EXOTEL_AGENTSTREAM_WEBHOOK_SECRET = "";
 process.env.TURN_END_SILENCE_MS = "300";
 process.env.MOCK_TELEPHONY_AUTOPLAY = "false"; // only explicit providers in this file run simulations
 
-import { db } from "../../db/client.js";
+import { adminDb as db } from "../../db/client.js";
 import { agentKnowledgeBindings, agentPhoneNumbers, calls, leads, projects } from "../../db/schema.js";
 import { setTelephonyProvider } from "../../adapters/telephony/index.js";
 import { MockTelephonyProvider } from "../../adapters/telephony/mock.provider.js";
 import { systemContext } from "../../auth/context.js";
 import { NotFoundError } from "../../shared/errors.js";
-import { conversationsRepository } from "../../db/repositories/conversations.repository.js";
+import { conversationsRepository } from "../../test/repos.js";
 import { cleanupTenants, createDefaultAgent, createMember, createTenant, loginCookie, type TestTenant } from "../../test/tenants.js";
 import {
   CapturingProvider,

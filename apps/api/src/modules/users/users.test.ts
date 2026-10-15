@@ -5,7 +5,7 @@ process.env.AI_PROVIDER = "mock";
 process.env.TELEPHONY_PROVIDER = "mock";
 
 import { buildApp } from "../../app.js";
-import { db } from "../../db/client.js";
+import { adminDb as db } from "../../db/client.js";
 import { auditLogs, invitations, leads, memberships, projectMembers, sessions, users } from "../../db/schema.js";
 import { systemContext } from "../../auth/context.js";
 import { verifyPassword } from "../../auth/password.js";
@@ -282,7 +282,8 @@ describe("DELETE /api/users/:userId", () => {
     const [lead] = await db.select().from(leads).where(eq(leads.id, A.leadId));
     expect(lead.assignedUserId).toBeNull();
     expect(await db.select().from(users).where(eq(users.id, m.userId))).toHaveLength(1);
-    expect(await db.select().from(sessions).where(eq(sessions.userId, m.userId))).not.toHaveLength(0);
+    // Their sessions that were working in this organization end with the membership (same transaction).
+    expect(await db.select().from(sessions).where(eq(sessions.userId, m.userId))).toHaveLength(0);
 
     // The still-valid cookie must no longer reach the organization's data.
     for (const path of ["/api/leads", "/api/users", "/api/organization", "/api/projects"]) {

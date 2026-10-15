@@ -1,13 +1,15 @@
 import { and, asc, eq } from "drizzle-orm";
 import { db } from "../client.js";
-import { leads, memberships, organizations, projectMembers, users } from "../schema.js";
+import { runInTenant } from "../tenant-context.js";
+import { leads, memberships, organizations, projectMembers, sessions, users } from "../schema.js";
 
 type OrgRole = (typeof memberships.$inferSelect)["role"];
 
 export const membershipsRepository = {
   /** All organizations a user belongs to (oldest membership first), with their role. */
   async listForUser(params: { userId: string }) {
-    return db
+    // Identity lookup: scoped to the user themselves, before any organization is chosen (RLS: own memberships only).
+    return runInTenant({ userId: params.userId }, async () => await db
       .select({
         organizationId: memberships.organizationId,
         organizationName: organizations.name,
@@ -17,15 +19,15 @@ export const membershipsRepository = {
       .from(memberships)
       .innerJoin(organizations, eq(organizations.id, memberships.organizationId))
       .where(and(eq(memberships.userId, params.userId), eq(organizations.status, "active")))
-      .orderBy(asc(memberships.createdAt));
+      .orderBy(asc(memberships.createdAt)));
   },
 
   async findByUserAndOrg(params: { userId: string; organizationId: string }) {
-    const rows = await db
+    const rows = await runInTenant({ userId: params.userId }, async () => await db
       .select()
       .from(memberships)
       .where(and(eq(memberships.userId, params.userId), eq(memberships.organizationId, params.organizationId)))
-      .limit(1);
+      .limit(1));
     return rows[0] ?? null;
   },
 
@@ -60,6 +62,25 @@ export const membershipsRepository = {
     return rows[0] ?? null;
   },
 
+  /**
+   * Changes a role and ends the user's sessions in this organization in ONE transaction. The new role already
+   * applies to the very next request (memberships are read per request); ending the sessions additionally forces a
+   * fresh sign-in (and a fresh second factor) for the changed privileges.
+   */
+  async updateRoleRevokingSessions(params: { organizationId: string; userId: string; role: OrgRole }) {
+    return db.transaction(async (tx) => {
+      await tx
+        .update(memberships)
+        .set({ role: params.role })
+        .where(and(eq(memberships.organizationId, params.organizationId), eq(memberships.userId, params.userId)));
+      const gone = await tx
+        .delete(sessions)
+        .where(and(eq(sessions.userId, params.userId), eq(sessions.activeOrganizationId, params.organizationId)))
+        .returning({ id: sessions.id });
+      return gone.length;
+    });
+  },
+
   async remove(params: { organizationId: string; userId: string }) {
     const rows = await db
       .delete(memberships)
@@ -85,6 +106,10 @@ export const membershipsRepository = {
         .delete(memberships)
         .where(and(eq(memberships.organizationId, params.organizationId), eq(memberships.userId, params.userId)))
         .returning();
+      // Their sessions working in this organization end with the membership (sessions in other organizations stay).
+      await tx
+        .delete(sessions)
+        .where(and(eq(sessions.userId, params.userId), eq(sessions.activeOrganizationId, params.organizationId)));
       return rows[0] ?? null;
     });
   },

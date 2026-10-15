@@ -127,7 +127,46 @@ export function validateConfig(): ConfigReport {
   }
   if (cfg.limits.maxConcurrentCallsPerOrg === 0) warnings.push("MAX_CONCURRENT_CALLS_PER_ORG=0: concurrent calls per organization are unlimited");
 
+  // Retention deletion is destructive and policy-gated: it can only be on with an approval reference and valid periods.
+  {
+    const wanted = (env.SECURITY_EVENT_RETENTION_ENABLED ?? "false") === "true";
+    const approvalRef = (env.SECURITY_EVENT_RETENTION_APPROVAL_REF ?? "").trim();
+    const periodVars = [
+      "SECURITY_EVENT_RETENTION_DAYS_AUTH_SESSION",
+      "SECURITY_EVENT_RETENTION_DAYS_MFA_CONFIG",
+      "SECURITY_EVENT_RETENTION_DAYS_ACCESS_DENIED",
+      "SECURITY_EVENT_RETENTION_DAYS_PRIVILEGED_ACTION",
+      "SECURITY_EVENT_RETENTION_DAYS_OTHER",
+    ];
+    for (const name of periodVars) {
+      const raw = env[name];
+      if (raw === undefined || raw === "") continue;
+      if (!/^\d+$/.test(raw) || Number(raw) < 1) errors.push(`${name} must be a whole number of days >= 1 (got "${raw}")`);
+      else if (wanted && Number(raw) < 30) errors.push(`${name}=${raw} is below the 30-day floor allowed when retention deletion is enabled`);
+    }
+    if (wanted && !approvalRef) {
+      errors.push("SECURITY_EVENT_RETENTION_ENABLED=true requires SECURITY_EVENT_RETENTION_APPROVAL_REF (the recorded business/legal approval of the retention periods); deletion stays off without it");
+    }
+    if (!wanted && approvalRef) warnings.push("SECURITY_EVENT_RETENTION_APPROVAL_REF is set but SECURITY_EVENT_RETENTION_ENABLED is not true: no events are deleted");
+    if ((env.SECURITY_EVENT_RETENTION_ARCHIVE ?? "false") === "true" && !wanted) {
+      warnings.push("SECURITY_EVENT_RETENTION_ARCHIVE=true has no effect while retention deletion is disabled");
+    }
+  }
+
   if (production) {
+    // The administrative connection (fixtures, provisioning scripts) must never exist in a serving process.
+    if (env.DATABASE_ADMIN_URL?.trim()) {
+      errors.push("DATABASE_ADMIN_URL must not be set on the API runtime in production (it bypasses row-level security); use it only for operator scripts");
+    }
+    if (cfg.telephonyProvider === "exotel" && !cfg.stream.tokenKeys.trim()) {
+      errors.push("STREAM_TOKEN_KEYS must be set in production with TELEPHONY_PROVIDER=exotel (per-call media-stream tokens; format <kid>:<base64 of 32+ bytes>, first key signs)");
+    }
+    if (cfg.stream.allowStaticSecret) {
+      warnings.push("STREAM_ALLOW_STATIC_SECRET is on: the media stream also accepts the shared webhook secret alone (needed for inbound calls and Exotel flow mode); turn it off for API-outbound-only deployments");
+    }
+    if (!cfg.auth.mfa.encryptionKey) warnings.push("MFA_ENCRYPTION_KEY is not set: no one can enrol in two-step verification until it is");
+    if (cfg.auth.mfa.enforcement === "off") warnings.push("MFA_ENFORCEMENT=off: owners/admins are not asked for two-step verification");
+    if (cfg.auth.passwords.pwned === "off") warnings.push("PWNED_PASSWORDS=off: new passwords are not screened against known breaches");
     if (!env.WEB_ORIGINS?.trim()) errors.push("WEB_ORIGINS must be set to the dashboard's public origin(s) in production");
     else if (cfg.auth.allowedOrigins.some(isLocalOrigin)) errors.push("WEB_ORIGINS must not list localhost origins in production");
     if (!cfg.auth.cookieSecure) errors.push("COOKIE_SECURE must be true in production");

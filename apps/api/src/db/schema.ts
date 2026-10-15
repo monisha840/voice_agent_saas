@@ -15,6 +15,7 @@ import {
   text,
   varchar,
   integer,
+  bigint,
   timestamp,
   jsonb,
   pgEnum,
@@ -343,6 +344,14 @@ export const users = pgTable(
     /** scrypt hash string (see auth/password.ts). Never returned by any API. */
     passwordHash: text("password_hash").notNull(),
     isActive: boolean("is_active").notNull().default(true),
+    /** When the password was last set; sessions older than this can never be resumed. */
+    passwordChangedAt: timestamp("password_changed_at", { withTimezone: true }),
+    /** TOTP secret, AES-256-GCM encrypted (auth/secret-box.ts). Null = MFA not enrolled. Never returned by any API. */
+    mfaSecretEnc: text("mfa_secret_enc"),
+    /** Set once the user proved possession of the authenticator (enrollment confirmed). */
+    mfaEnabledAt: timestamp("mfa_enabled_at", { withTimezone: true }),
+    /** Last accepted TOTP time step: a code is single-use (replay protection). */
+    mfaLastStep: bigint("mfa_last_step", { mode: "number" }),
     lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -368,6 +377,10 @@ export const sessions = pgTable(
     tokenHash: varchar("token_hash", { length: 64 }).notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    /** When the user last proved their password (login or re-authentication): gates sensitive actions. */
+    lastAuthAt: timestamp("last_auth_at", { withTimezone: true }).notNull().defaultNow(),
+    /** When this session passed the second factor. Null on an MFA account = the session is not yet usable. */
+    mfaVerifiedAt: timestamp("mfa_verified_at", { withTimezone: true }),
     ipAddress: varchar("ip_address", { length: 64 }),
     userAgent: varchar("user_agent", { length: 512 }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -742,5 +755,271 @@ export const agentPhoneNumbers = pgTable(
     }).onDelete("cascade"),
     numberUnique: uniqueIndex("agent_phone_numbers_number_unique").on(t.phoneNumber),
     agentIdx: index("agent_phone_numbers_agent_idx").on(t.agentId),
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Authentication security (MFA recovery, security audit trail, shared login throttling)
+// ---------------------------------------------------------------------------
+
+/** Single-use MFA recovery codes. Only a SHA-256 of each code is stored. */
+export const mfaRecoveryCodes = pgTable(
+  "mfa_recovery_codes",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    codeHash: varchar("code_hash", { length: 64 }).notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    userIdx: index("mfa_recovery_codes_user_idx").on(t.userId),
+    hashUnique: uniqueIndex("mfa_recovery_codes_hash_unique").on(t.userId, t.codeHash),
+  }),
+);
+
+/**
+ * Append-only authentication and security events (logins, lockouts, MFA, session revocation, access denials,
+ * privileged system actions). organization_id is null for events that happen before an organization is known
+ * (a failed login). Never holds secrets, tokens, passwords or request bodies.
+ */
+export const securityEvents = pgTable(
+  "security_events",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").references(() => organizations.id, { onDelete: "restrict" }),
+    actorUserId: uuid("actor_user_id").references(() => users.id, { onDelete: "set null" }),
+    /** Dotted verb, e.g. "auth.login.failed", "auth.mfa.enrolled", "session.revoked". */
+    eventType: varchar("event_type", { length: 80 }).notNull(),
+    outcome: varchar("outcome", { length: 16 }).notNull(), // success | failure | denied | info
+    ipAddress: varchar("ip_address", { length: 64 }),
+    userAgent: varchar("user_agent", { length: 256 }),
+    requestId: varchar("request_id", { length: 64 }),
+    metadata: jsonb("metadata").notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    orgCreatedIdx: index("security_events_org_created_idx").on(t.organizationId, t.createdAt),
+    userCreatedIdx: index("security_events_user_created_idx").on(t.actorUserId, t.createdAt),
+    typeCreatedIdx: index("security_events_type_created_idx").on(t.eventType, t.createdAt),
+  }),
+);
+
+/**
+ * How many media-stream connections each per-call token has opened (replay / reuse limit shared across API
+ * instances). Rows are keyed by the token's random id; they hold no tenant data and expire with the token.
+ */
+export const streamTokenUses = pgTable(
+  "stream_token_uses",
+  {
+    jti: varchar("jti", { length: 64 }).primaryKey(),
+    callId: uuid("call_id").notNull(),
+    uses: integer("uses").notNull().default(0),
+    firstUsedAt: timestamp("first_used_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (t) => ({
+    expiresIdx: index("stream_token_uses_expires_idx").on(t.expiresAt),
+  }),
+);
+
+/**
+ * Cross-instance "one media stream per call" claim. A live stream refreshes `heartbeat_at`; a claim whose heartbeat is
+ * stale (crashed instance) can be taken over. Holds only ids: no tenant data, no organization_id, no RLS.
+ */
+export const streamClaims = pgTable(
+  "stream_claims",
+  {
+    callId: uuid("call_id").primaryKey(),
+    instanceId: varchar("instance_id", { length: 64 }).notNull(),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }).notNull().defaultNow(),
+    heartbeatAt: timestamp("heartbeat_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    heartbeatIdx: index("stream_claims_heartbeat_idx").on(t.heartbeatAt),
+  }),
+);
+
+/**
+ * Short opaque per-call stream grants minted by the dynamic Voicebot endpoint (opt-in; security/stream-grant.ts).
+ * Only sha256(grant) is stored. No organization_id on purpose: the owning organization is always read from the call
+ * record this row points at, so the table holds no tenant data (ids + counters) and is classified operational.
+ */
+export const streamGrants = pgTable(
+  "stream_grants",
+  {
+    grantHash: varchar("grant_hash", { length: 64 }).primaryKey(),
+    callId: uuid("call_id").notNull(),
+    providerCallId: text("provider_call_id").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    uses: integer("uses").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    expiresIdx: index("stream_grants_expires_idx").on(t.expiresAt),
+  }),
+);
+
+/**
+ * Shared (database-backed, so every API instance sees the same counters) failed-login throttle. The key is a
+ * SHA-256 of "ip:<address>", "acct:<email>" or "pair:<email>|<address>": no plaintext identifiers are stored.
+ */
+export const authThrottle = pgTable("auth_throttle", {
+  key: varchar("key", { length: 64 }).primaryKey(),
+  failures: integer("failures").notNull().default(0),
+  windowStartedAt: timestamp("window_started_at", { withTimezone: true }).notNull().defaultNow(),
+  lockedUntil: timestamp("locked_until", { withTimezone: true }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * Shared fixed-window rate-limit counters (one row per key, multi-instance safe). `key` is a SHA-256 hex of
+ * "<scope>|<identifier>" so no plaintext IP, email or user id is stored. The window restarts on the first hit after it
+ * expires; stale rows are purged by the security janitor. Operational table: no tenant data, no RLS.
+ */
+export const rateLimitBuckets = pgTable(
+  "rate_limit_buckets",
+  {
+    key: varchar("key", { length: 64 }).primaryKey(),
+    windowStart: timestamp("window_start", { withTimezone: true }).notNull().defaultNow(),
+    count: integer("count").notNull().default(0),
+  },
+  (t) => ({
+    windowIdx: index("rate_limit_buckets_window_idx").on(t.windowStart),
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Billing foundation (migration 0019): plan catalog, tenant subscriptions, metered usage ledger, payment events.
+// See docs/billing/README.md. No payment credentials are ever stored here.
+// ---------------------------------------------------------------------------
+
+export const subscriptionStatusEnum = pgEnum("subscription_status", [
+  "trialing",
+  "active",
+  "past_due",
+  "suspended",
+  "canceled",
+  "expired",
+]);
+
+export const usageLedgerStateEnum = pgEnum("usage_ledger_state", ["pending", "final", "superseded"]);
+
+/**
+ * The plan catalog: configuration, not tenant state. Global reference data (no organization_id, no RLS); the runtime
+ * role can only read it. Prices are integer paise (NULL = custom/negotiated). Seeded by the migration; changed by
+ * operators with the owner connection, never by the application.
+ */
+export const plans = pgTable("plans", {
+  key: varchar("key", { length: 40 }).primaryKey(),
+  name: varchar("name", { length: 100 }).notNull(),
+  description: text("description").notNull().default(""),
+  pricePaise: integer("price_paise"),
+  currency: varchar("currency", { length: 3 }).notNull().default("INR"),
+  billingInterval: varchar("billing_interval", { length: 10 }).notNull().default("month"),
+  includedMinutes: integer("included_minutes").notNull().default(0),
+  trialDays: integer("trial_days"),
+  /** maxConcurrentCalls, maxAgents, maxTeamMembers, retentionDays, analytics, apiAccess, webhooks (validated in code). */
+  entitlements: jsonb("entitlements").notNull().default({}),
+  isPublic: boolean("is_public").notNull().default(true),
+  isActive: boolean("is_active").notNull().default(true),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** A tenant's subscription state (one row per organization). Organizations without a row are unmanaged (legacy). */
+export const subscriptions = pgTable(
+  "subscriptions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    planKey: varchar("plan_key", { length: 40 })
+      .notNull()
+      .references(() => plans.key, { onDelete: "restrict" }),
+    status: subscriptionStatusEnum("status").notNull(),
+    trialEndsAt: timestamp("trial_ends_at", { withTimezone: true }),
+    currentPeriodStart: timestamp("current_period_start", { withTimezone: true }).notNull(),
+    currentPeriodEnd: timestamp("current_period_end", { withTimezone: true }).notNull(),
+    cancelAtPeriodEnd: boolean("cancel_at_period_end").notNull().default(false),
+    canceledAt: timestamp("canceled_at", { withTimezone: true }),
+    /** A plan change requested but not yet effective (needs a verified payment or a sales decision). */
+    scheduledPlanKey: varchar("scheduled_plan_key", { length: 40 }),
+    /** Negotiated overrides of the plan's entitlements (e.g. Enterprise). Same keys as plans.entitlements + includedMinutes. */
+    limitOverrides: jsonb("limit_overrides").notNull().default({}),
+    paymentProvider: varchar("payment_provider", { length: 40 }),
+    providerSubscriptionId: varchar("provider_subscription_id", { length: 255 }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    orgUnique: uniqueIndex("subscriptions_org_unique").on(t.organizationId),
+    statusIdx: index("subscriptions_status_idx").on(t.status),
+  }),
+);
+
+/**
+ * Metered call usage, append-only. One row per call (idempotency key `call:<callId>`); a correction is a NEW row that
+ * supersedes the original (the original is only ever marked `superseded`). A trigger (migration 0019) rejects any
+ * other update or any delete, so history cannot be rewritten silently.
+ */
+export const usageLedger = pgTable(
+  "usage_ledger",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    callId: uuid("call_id"),
+    providerCallId: varchar("provider_call_id", { length: 255 }),
+    idempotencyKey: varchar("idempotency_key", { length: 160 }).notNull(),
+    /** call_lifecycle | reconciliation | correction | mock */
+    source: varchar("source", { length: 30 }).notNull(),
+    entryType: varchar("entry_type", { length: 12 }).notNull().default("call"), // call | correction
+    state: usageLedgerStateEnum("state").notNull().default("final"),
+    supersedesId: uuid("supersedes_id"),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    endedAt: timestamp("ended_at", { withTimezone: true }),
+    durationSeconds: integer("duration_seconds").notNull().default(0),
+    billableSeconds: integer("billable_seconds").notNull().default(0),
+    billableMinutes: integer("billable_minutes").notNull().default(0),
+    roundingPolicy: varchar("rounding_policy", { length: 40 }).notNull(),
+    /** billed | unanswered | failed | too_short | test_call | interrupted | corrected */
+    billableReason: varchar("billable_reason", { length: 30 }).notNull(),
+    outcome: varchar("outcome", { length: 30 }).notNull(),
+    terminationReason: varchar("termination_reason", { length: 100 }),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+    metadata: jsonb("metadata").notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    idempotencyUnique: uniqueIndex("usage_ledger_org_idempotency_unique").on(t.organizationId, t.idempotencyKey),
+    orgOccurredIdx: index("usage_ledger_org_occurred_idx").on(t.organizationId, t.occurredAt),
+    orgCallIdx: index("usage_ledger_org_call_idx").on(t.organizationId, t.callId),
+  }),
+);
+
+/** Verified payment-provider events, for idempotent handling (no card data; payload digest only). */
+export const billingEvents = pgTable(
+  "billing_events",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    provider: varchar("provider", { length: 40 }).notNull(),
+    providerEventId: varchar("provider_event_id", { length: 255 }).notNull(),
+    eventType: varchar("event_type", { length: 60 }).notNull(),
+    outcome: varchar("outcome", { length: 20 }).notNull(), // applied | ignored
+    payloadDigest: varchar("payload_digest", { length: 64 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    eventUnique: uniqueIndex("billing_events_provider_event_unique").on(t.provider, t.providerEventId),
+    orgIdx: index("billing_events_org_idx").on(t.organizationId, t.createdAt),
   }),
 );

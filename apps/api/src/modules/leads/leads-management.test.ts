@@ -9,13 +9,13 @@ process.env.AI_PROVIDER = "mock";
 process.env.TELEPHONY_PROVIDER = "mock";
 
 import { buildApp } from "../../app.js";
-import { db } from "../../db/client.js";
+import { adminDb as db } from "../../db/client.js";
 import { auditLogs, projects, usageEvents, users } from "../../db/schema.js";
 import { userContext, type RequestContext } from "../../auth/context.js";
 import { MockTelephonyProvider } from "../../adapters/telephony/mock.provider.js";
 import { setTelephonyProvider } from "../../adapters/telephony/index.js";
-import { projectMembersRepository } from "../../db/repositories/project-members.repository.js";
-import { auditRepository } from "../../db/repositories/audit.repository.js";
+import { projectMembersRepository } from "../../test/repos.js";
+import { auditRepository } from "../../test/repos.js";
 import { usageService } from "../usage/usage.service.js";
 import { leadsService } from "./leads.service.js";
 import { siteVisitsService } from "../site-visits/site-visits.service.js";

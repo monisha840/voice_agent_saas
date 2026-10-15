@@ -1,3 +1,6 @@
+import { isUniqueViolation } from "../../db/pg-error.js";
+import { securityEvents } from "../../security/security-events.js";
+import { checkPassword, PASSWORD_PROBLEM_MESSAGE } from "../../auth/password-policy.js";
 import { createHash, randomBytes } from "node:crypto";
 import { assertCan } from "../../auth/access.js";
 import { userContext, type OrgRole, type RequestContext } from "../../auth/context.js";
@@ -8,6 +11,7 @@ import { membershipsRepository } from "../../db/repositories/memberships.reposit
 import { usersRepository } from "../../db/repositories/users.repository.js";
 import { ConflictError, ForbiddenError, NotFoundError, UnauthorizedError, ValidationError } from "../../shared/errors.js";
 import { auditService } from "../audit/audit.service.js";
+import { tenantScoped } from "../../auth/tenant-scoped.js";
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -42,7 +46,7 @@ async function assertNotLastOwner(ctx: RequestContext, current: OrgRole) {
   }
 }
 
-export const usersService = {
+const usersServiceImpl = {
   async listTeam(ctx: RequestContext) {
     assertCan(ctx, "users:read");
     return membershipsRepository.listForOrg({ organizationId: ctx.organizationId });
@@ -115,7 +119,19 @@ export const usersService = {
     }
     if (member.role === params.role) return { userId: params.userId, role: member.role };
     if (params.role !== "OWNER") await assertNotLastOwner(ctx, member.role);
-    await membershipsRepository.updateRole({ organizationId: ctx.organizationId, userId: params.userId, role: params.role });
+    // The role change and the end of that user's sessions in this organization are one transaction.
+    const revoked = await membershipsRepository.updateRoleRevokingSessions({
+      organizationId: ctx.organizationId,
+      userId: params.userId,
+      role: params.role,
+    });
+    await securityEvents.record({
+      type: "membership.role_changed",
+      outcome: "success",
+      userId: params.userId,
+      organizationId: ctx.organizationId,
+      metadata: { from: member.role, to: params.role, by: actorUserId(ctx), sessionsRevoked: revoked },
+    });
     await auditService.record(ctx, {
       action: "user.role_changed",
       entityType: "user",
@@ -130,6 +146,13 @@ export const usersService = {
     const member = await loadManageableMember(ctx, params.userId);
     await assertNotLastOwner(ctx, member.role);
     await membershipsRepository.removeWithCleanup({ organizationId: ctx.organizationId, userId: params.userId });
+    await securityEvents.record({
+      type: "membership.removed",
+      outcome: "success",
+      userId: params.userId,
+      organizationId: ctx.organizationId,
+      metadata: { role: member.role, by: actorUserId(ctx) },
+    });
     await auditService.record(ctx, {
       action: "user.removed",
       entityType: "user",
@@ -150,6 +173,10 @@ export const usersService = {
     if (!invitation) throw new ValidationError(INVALID_INVITATION);
 
     const existing = await usersRepository.findByEmail({ email: invitation.email });
+    if (!existing) {
+      const problem = await checkPassword({ password: input.password, email: invitation.email, name: input.name });
+      if (problem) throw new ValidationError(PASSWORD_PROBLEM_MESSAGE[problem]);
+    }
     if (existing) {
       // An existing account joins another organization: prove it is theirs; never change its password.
       if (!existing.isActive || !(await verifyPassword(input.password, existing.passwordHash))) {
@@ -169,7 +196,7 @@ export const usersService = {
       now: new Date(),
     }).catch((err: unknown) => {
       // A concurrent sign-up for the same email lost the race on users_email_unique.
-      if ((err as { code?: string }).code === "23505") return null;
+      if (isUniqueViolation(err)) return null;
       throw err;
     });
     if (!accepted) throw new ValidationError(INVALID_INVITATION);
@@ -184,3 +211,5 @@ export const usersService = {
     return { user, organizationId: invitation.organizationId };
   },
 };
+
+export const usersService = tenantScoped(usersServiceImpl);

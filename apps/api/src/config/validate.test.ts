@@ -31,6 +31,16 @@ const TOUCHED = [
   "STALE_CALL_IN_PROGRESS_MS",
   "SILENCE_TIMEOUT_MS",
   "SHUTDOWN_DRAIN_TIMEOUT_MS",
+  "DATABASE_ADMIN_URL",
+  "MFA_ENCRYPTION_KEY",
+  "MFA_ENFORCEMENT",
+  "PWNED_PASSWORDS",
+  "STREAM_TOKEN_KEYS",
+  "STREAM_ALLOW_STATIC_SECRET",
+  "SECURITY_EVENT_RETENTION_ENABLED",
+  "SECURITY_EVENT_RETENTION_APPROVAL_REF",
+  "SECURITY_EVENT_RETENTION_DAYS_AUTH_SESSION",
+  "SECURITY_EVENT_RETENTION_ARCHIVE",
 ] as const;
 
 let saved: Record<string, string | undefined>;
@@ -62,6 +72,10 @@ function productionEnv() {
   process.env.SARVAM_API_KEY = "sk";
   process.env.TRUST_PROXY = "1";
   process.env.API_PRIVATE_HOSTS = "api.internal";
+  process.env.MFA_ENCRYPTION_KEY = Buffer.alloc(32, 9).toString("base64");
+  process.env.PWNED_PASSWORDS = "fail-open";
+  process.env.STREAM_TOKEN_KEYS = `k1:${Buffer.alloc(32, 5).toString("base64")}`;
+  process.env.STREAM_ALLOW_STATIC_SECRET = "false";
 }
 
 describe("validateConfig", () => {
@@ -69,6 +83,50 @@ describe("validateConfig", () => {
     productionEnv();
     expect(validateConfig()).toEqual({ errors: [], warnings: [] });
     expect(assertValidConfig()).toEqual([]);
+  });
+
+  it("production refuses the administrative database connection on the API runtime", () => {
+    productionEnv();
+    process.env.DATABASE_ADMIN_URL = "postgresql://owner:pw@db/prod";
+    const { errors } = validateConfig();
+    expect(errors.join(" ")).toMatch(/DATABASE_ADMIN_URL/);
+  });
+
+  it("production warns when MFA is unavailable or off, and when passwords are not screened", () => {
+    productionEnv();
+    delete process.env.MFA_ENCRYPTION_KEY;
+    process.env.MFA_ENFORCEMENT = "off";
+    delete process.env.PWNED_PASSWORDS;
+    const { warnings, errors } = validateConfig();
+    expect(errors).toEqual([]);
+    const text = warnings.join(" ");
+    expect(text).toMatch(/MFA_ENCRYPTION_KEY/);
+    expect(text).toMatch(/MFA_ENFORCEMENT=off/);
+    expect(text).toMatch(/PWNED_PASSWORDS/);
+  });
+
+  it("production with Exotel requires per-call stream token keys", () => {
+    productionEnv();
+    delete process.env.STREAM_TOKEN_KEYS;
+    expect(validateConfig().errors.join(" ")).toMatch(/STREAM_TOKEN_KEYS/);
+  });
+
+  it("retention deletion cannot be switched on without an approval reference or with invalid periods", () => {
+    process.env.SECURITY_EVENT_RETENTION_ENABLED = "true";
+    expect(validateConfig().errors.join(" ")).toMatch(/SECURITY_EVENT_RETENTION_APPROVAL_REF/);
+    expect(getConfig().securityRetention.enabled).toBe(false); // the effective switch stays off
+    process.env.SECURITY_EVENT_RETENTION_APPROVAL_REF = "POLICY-123";
+    expect(validateConfig().errors).toEqual([]);
+    expect(getConfig().securityRetention.enabled).toBe(true);
+    process.env.SECURITY_EVENT_RETENTION_DAYS_AUTH_SESSION = "7";
+    expect(validateConfig().errors.join(" ")).toMatch(/30-day floor/);
+    process.env.SECURITY_EVENT_RETENTION_DAYS_AUTH_SESSION = "abc";
+    expect(validateConfig().errors.join(" ")).toMatch(/whole number of days/);
+  });
+
+  it("retention is off by default", () => {
+    expect(getConfig().securityRetention.enabled).toBe(false);
+    expect(validateConfig().errors).toEqual([]);
   });
 
   it("local development with no provider credentials is valid", () => {

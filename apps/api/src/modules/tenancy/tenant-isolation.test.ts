@@ -14,7 +14,7 @@ process.env.TELEPHONY_PROVIDER = "mock";
 process.env.TURN_END_SILENCE_MS = "300";
 
 import { buildApp } from "../../app.js";
-import { db } from "../../db/client.js";
+import { adminDb as db } from "../../db/client.js";
 import { calls, conversations, leads, memberships, projectKnowledge, siteVisits } from "../../db/schema.js";
 import { userContext, type RequestContext } from "../../auth/context.js";
 import { MockTelephonyProvider } from "../../adapters/telephony/mock.provider.js";
@@ -23,9 +23,10 @@ import { callsService } from "../calls/calls.service.js";
 import { leadsService } from "../leads/leads.service.js";
 import { projectsService } from "../projects/projects.service.js";
 import { siteVisitsService } from "../site-visits/site-visits.service.js";
-import { leadsRepository } from "../../db/repositories/leads.repository.js";
-import { callsRepository } from "../../db/repositories/calls.repository.js";
-import { projectsRepository } from "../../db/repositories/projects.repository.js";
+import { leadsRepository } from "../../test/repos.js";
+import { callsRepository } from "../../test/repos.js";
+import { projectsRepository } from "../../test/repos.js";
+import { expectPgError } from "../../test/helpers.js";
 import { cleanupTenants, createTenant, loginCookie, TEST_PASSWORD, type TestTenant } from "../../test/tenants.js";
 
 type App = Awaited<ReturnType<typeof buildApp>>;
@@ -175,39 +176,29 @@ describe("database constraints: cross-organization links are impossible even wit
   const fkError = /foreign key|violates/i;
 
   it("a lead cannot point at another organization's project", async () => {
-    await expect(
-      db.insert(leads).values({ organizationId: A.orgId, projectId: B.projectId, name: "x", phone: "+919000099999" }),
-    ).rejects.toThrow(fkError);
+    await expectPgError(db.insert(leads).values({ organizationId: A.orgId, projectId: B.projectId, name: "x", phone: "+919000099999" }), fkError);
   });
 
   it("a call cannot point at another organization's lead", async () => {
-    await expect(db.insert(calls).values({ organizationId: A.orgId, agentId: A.agentId, leadId: B.leadId, status: "initiating" })).rejects.toThrow(fkError);
+    await expectPgError(db.insert(calls).values({ organizationId: A.orgId, agentId: A.agentId, leadId: B.leadId, status: "initiating" }), fkError);
   });
 
   it("a conversation cannot point at another organization's call", async () => {
-    await expect(db.insert(conversations).values({ organizationId: A.orgId, callId: B.callId })).rejects.toThrow(fkError);
+    await expectPgError(db.insert(conversations).values({ organizationId: A.orgId, callId: B.callId }), fkError);
   });
 
   it("a site visit cannot point at another organization's lead or project", async () => {
     const when = new Date(Date.now() + 1e9);
-    await expect(
-      db.insert(siteVisits).values({ organizationId: A.orgId, leadId: B.leadId, projectId: A.projectId, scheduledAt: when }),
-    ).rejects.toThrow(fkError);
-    await expect(
-      db.insert(siteVisits).values({ organizationId: A.orgId, leadId: A.leadId, projectId: B.projectId, scheduledAt: when }),
-    ).rejects.toThrow(fkError);
+    await expectPgError(db.insert(siteVisits).values({ organizationId: A.orgId, leadId: B.leadId, projectId: A.projectId, scheduledAt: when }), fkError);
+    await expectPgError(db.insert(siteVisits).values({ organizationId: A.orgId, leadId: A.leadId, projectId: B.projectId, scheduledAt: when }), fkError);
   });
 
   it("project knowledge cannot be attached to another organization's project", async () => {
-    await expect(
-      db.insert(projectKnowledge).values({ organizationId: A.orgId, projectId: B.projectId, category: "faq", content: {} }),
-    ).rejects.toThrow(fkError);
+    await expectPgError(db.insert(projectKnowledge).values({ organizationId: A.orgId, projectId: B.projectId, category: "faq", content: {} }), fkError);
   });
 
   it("every tenant table refuses a row with no organization", async () => {
-    await expect(
-      db.insert(leads).values({ projectId: A.projectId, name: "x", phone: "+919000099998" } as never),
-    ).rejects.toThrow(/null|organization/i);
+    await expectPgError(db.insert(leads).values({ projectId: A.projectId, name: "x", phone: "+919000099998" } as never), /null|organization/i);
   });
 });
 
@@ -302,5 +293,107 @@ describe("users who belong to several organizations", () => {
     expect(res.body.code).toBe("NO_ORGANIZATION");
     // restore for cleanliness
     await db.insert(memberships).values({ organizationId: B.orgId, userId: B.userId, role: "OWNER" });
+  });
+});
+
+describe("attacker-controlled fields never move data across organizations (mass assignment / IDOR)", () => {
+  it("a client-supplied organizationId on create is ignored; the row lands in the caller's organization", async () => {
+    const res = await http(cookieA, "/api/leads", {
+      method: "POST",
+      body: JSON.stringify({ name: "Forged Org Lead", phone: "+919000077001", projectId: A.projectId, organizationId: B.orgId }),
+    });
+    // Either the strict schema refuses the unknown field or it is dropped: it must never be honoured.
+    expect([200, 201, 400]).toContain(res.status);
+    const rows = await db.select().from(leads).where(eq(leads.name, "Forged Org Lead"));
+    for (const r of rows) expect(r.organizationId).toBe(A.orgId);
+    expect(rows.filter((r) => r.organizationId === B.orgId)).toHaveLength(0);
+  });
+
+  it("pointing a create at B's project is refused (it does not exist for A) and creates nothing", async () => {
+    const before = await db.select().from(leads).where(eq(leads.organizationId, B.orgId));
+    const res = await http(cookieA, "/api/leads", {
+      method: "POST",
+      body: JSON.stringify({ name: "Into B", phone: "+919000077002", projectId: B.projectId }),
+    });
+    expect([400, 404]).toContain(res.status);
+    expect(await db.select().from(leads).where(eq(leads.organizationId, B.orgId))).toHaveLength(before.length);
+  });
+
+  it("an update cannot re-parent a lead to another organization or its project", async () => {
+    const res = await http(cookieA, `/api/leads/${A.leadId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name: "Renamed", organizationId: B.orgId, projectId: B.projectId }),
+    });
+    expect([200, 400, 404]).toContain(res.status);
+    const [row] = await db.select().from(leads).where(eq(leads.id, A.leadId));
+    expect(row.organizationId).toBe(A.orgId);
+    expect(row.projectId).toBe(A.projectId);
+  });
+
+  it("malformed and unexpected identifiers are rejected cleanly, never reaching the database as SQL", async () => {
+    for (const id of ["not-a-uuid", "00000000-0000-0000-0000-000000000000", "' OR '1'='1", "../../etc/passwd", `${A.leadId}%27`]) {
+      const res = await http(cookieA, `/api/leads/${encodeURIComponent(id)}`);
+      expect([400, 404], id).toContain(res.status);
+      expect(res.text).not.toMatch(/syntax|postgres|stack|select /i);
+    }
+  });
+
+  it("a provider callback cannot re-assign a call to another organization or lead, whatever its body claims", async () => {
+    const providerCallId = `iso-forge-${Date.now()}`;
+    const [bCall] = await db
+      .insert(calls)
+      .values({ organizationId: B.orgId, agentId: B.agentId, leadId: B.leadId, status: "ringing", providerCallId })
+      .returning();
+    await db.insert(conversations).values({ organizationId: B.orgId, callId: bCall.id });
+    const res = await fetch(`${baseUrl}/api/telephony/exotel/status-callback`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ providerCallId, status: "in_progress", organizationId: A.orgId, leadId: A.leadId, callId: A.callId }),
+    });
+    expect(res.status).toBe(200);
+    const [after] = await db.select().from(calls).where(eq(calls.id, bCall.id));
+    expect(after.organizationId).toBe(B.orgId);
+    expect(after.leadId).toBe(B.leadId);
+    const [aCall] = await db.select().from(calls).where(eq(calls.id, A.callId));
+    expect(aCall.organizationId).toBe(A.orgId);
+  });
+
+  it("a callback for an unknown call id changes nothing in any organization", async () => {
+    const snapshot = async () => JSON.stringify((await db.select().from(calls)).map((c) => [c.id, c.status]).sort());
+    const before = await snapshot();
+    const res = await fetch(`${baseUrl}/api/telephony/exotel/status-callback`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ providerCallId: "does-not-exist-anywhere", status: "completed" }),
+    });
+    expect(res.status).toBe(200);
+    expect(await snapshot()).toBe(before);
+  });
+});
+
+describe("concurrent traffic from two organizations never mixes", () => {
+  it("many simultaneous authenticated requests each see only their own organization", async () => {
+    const calls = Array.from({ length: 40 }, (_, i) => {
+      const mine = i % 2 === 0 ? { cookie: cookieA, t: A, other: B } : { cookie: cookieB, t: B, other: A };
+      return Promise.all([http(mine.cookie, "/api/leads"), http(mine.cookie, "/api/projects")]).then(([l, p]) => ({ mine, l, p }));
+    });
+    for (const { mine, l, p } of await Promise.all(calls)) {
+      expect(l.status).toBe(200);
+      expect(p.status).toBe(200);
+      const all = l.text + p.text;
+      expect(all).toContain(mine.t.projectName);
+      expect(all).not.toContain(mine.other.projectName);
+      expect(all).not.toContain(mine.other.orgId);
+    }
+  });
+
+  it("a cookie from one organization never authorizes the other's data, even by exact id, under concurrency", async () => {
+    const attempts = await Promise.all(
+      Array.from({ length: 20 }, () => Promise.all([http(cookieA, `/api/leads/${B.leadId}`), http(cookieB, `/api/leads/${A.leadId}`)])),
+    );
+    for (const [aToB, bToA] of attempts) {
+      expect(aToB.status).toBe(404);
+      expect(bToA.status).toBe(404);
+    }
   });
 });

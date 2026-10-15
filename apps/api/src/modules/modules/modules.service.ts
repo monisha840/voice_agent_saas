@@ -1,9 +1,11 @@
+import { runInTenant } from "../../db/tenant-context.js";
 import { assertCan } from "../../auth/access.js";
 import type { RequestContext } from "../../auth/context.js";
 import { organizationModulesRepository } from "../../db/repositories/organization-modules.repository.js";
 import { ForbiddenError, NotFoundError, ValidationError } from "../../shared/errors.js";
 import { auditService } from "../audit/audit.service.js";
 import { MODULES, getModule, isModuleKey, type ModuleKey } from "./module-registry.js";
+import { tenantScoped } from "../../auth/tenant-scoped.js";
 
 export interface OrganizationModuleState {
   key: ModuleKey;
@@ -12,7 +14,7 @@ export interface OrganizationModuleState {
   enabled: boolean;
 }
 
-export const modulesService = {
+const modulesServiceImpl = {
   /** Every module in the catalogue with this organization's state (no row = disabled). */
   async list(ctx: RequestContext): Promise<OrganizationModuleState[]> {
     assertCan(ctx, "org:read");
@@ -22,7 +24,10 @@ export const modulesService = {
 
   /** Keys of the modules this organization has switched on (for the /auth/me payload). */
   async enabledKeys(params: { organizationId: string }): Promise<ModuleKey[]> {
-    const keys = await organizationModulesRepository.listEnabledKeys(params);
+    // Takes an organization id from trusted callers (their verified context); scope the read to it.
+    const keys = await runInTenant({ organizationId: params.organizationId }, async () =>
+      organizationModulesRepository.listEnabledKeys(params),
+    );
     return keys.filter(isModuleKey);
   },
 
@@ -58,3 +63,5 @@ export const modulesService = {
     return { key: moduleKey, label: def.label, description: def.description, enabled: params.enabled };
   },
 };
+
+export const modulesService = tenantScoped(modulesServiceImpl);

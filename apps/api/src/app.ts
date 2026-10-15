@@ -1,6 +1,6 @@
+import { accountSecurityRoutes } from "./modules/auth/account-security.routes.js";
 import Fastify from "fastify";
 import formbody from "@fastify/formbody";
-import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
 import { authRoutes } from "./modules/auth/auth.routes.js";
 import { callsRoutes } from "./modules/calls/calls.routes.js";
@@ -10,6 +10,8 @@ import { agentConfigRoutes } from "./modules/agent-config/agent-config.routes.js
 import { agentsRoutes } from "./modules/agents/agents.routes.js";
 import { auditRoutes } from "./modules/audit/audit.routes.js";
 import { usageRoutes } from "./modules/usage/usage.routes.js";
+import { billingRoutes } from "./modules/billing/billing.routes.js";
+import { translatePlanCapError } from "./modules/billing/cap-errors.js";
 import { modulesRoutes } from "./modules/modules/modules.routes.js";
 import { toolsRoutes } from "./modules/tools/tools.routes.js";
 import { CONFIGURED_MODULES } from "./modules.config.js";
@@ -20,17 +22,20 @@ import { webCallRoutes } from "./modules/calls/web-call.routes.js";
 import { demoPropertyRoutes } from "./modules/projects/demo-property.routes.js";
 import { agentPhoneNumbersRoutes } from "./modules/agents/agent-phone-numbers.routes.js";
 import { inboundRoutes } from "./modules/calls/inbound.routes.js";
+import { metrics, isDbAuthorizationError } from "./runtime/metrics.js";
+import { metricsRoutes } from "./runtime/metrics.routes.js";
 import { databaseCheck, healthRoutes, type ReadinessCheck } from "./runtime/health.routes.js";
 import { resolveRequestId, runWithRequestId } from "./runtime/request-context.js";
 import { registerAuth } from "./auth/auth.plugin.js";
 import { logger } from "./shared/logger.js";
 import { getConfig } from "./config/env.js";
-import { globalRateLimitHook, routeRateLimitPluginOptions } from "./security/rate-limits.js";
+import { authenticatedRateLimitHook, globalRateLimitHook } from "./security/rate-limits.js";
 import { registerSecurityHeaders, registerUniformNotFound } from "./security/http-hardening.js";
 import { redactUrl, registerPublicAccessGuard } from "./security/telephony-auth.js";
 import {
   ConflictError,
   ForbiddenError,
+  AuthChallengeError,
   LimitExceededError,
   NotFoundError,
   ServiceUnavailableError,
@@ -51,7 +56,9 @@ export async function buildApp(
   const app = Fastify({
     // Only honor X-Forwarded-* when explicitly told we sit behind a proxy we control.
     // (The public-access guard reads the raw headers itself and is unaffected.)
-    trustProxy: cfg.trustProxy,
+    // (Fastify 5 no longer takes a hop count directly: express it as a hop predicate, same semantics as proxy-addr.)
+    trustProxy:
+      typeof cfg.trustProxy === "number" ? (_address: string, hop: number) => hop < (cfg.trustProxy as number) : cfg.trustProxy,
     // Exotel payloads and dashboard JSON are tiny; refuse anything larger with 413.
     bodyLimit: cfg.bodyLimitBytes,
     // Every request gets an id: a sane incoming X-Request-Id is kept (so a proxy's id carries through), otherwise a
@@ -81,10 +88,18 @@ export async function buildApp(
 
   // Exotel's status-callback can post application/x-www-form-urlencoded.
   await app.register(formbody);
-  await app.register(websocket, { options: { maxPayload: getConfig().realtime.wsMaxPayloadBytes } });
-  // Route-level limits (login) use the plugin; the generous per-IP default is our own hook, added
-  // BEFORE the login gate so it also counts unauthenticated floods. Exotel/health are exempt. In-memory only.
-  await app.register(rateLimit, routeRateLimitPluginOptions());
+  await app.register(websocket, {
+    options: { maxPayload: getConfig().realtime.wsMaxPayloadBytes },
+    // @fastify/websocket 11 routes socket errors here and, by default, terminates the socket abruptly. `ws` has already
+    // started the proper close for protocol errors (an oversized frame closes with 1009), so only record it: the
+    // client then sees the real close code instead of an abnormal 1006.
+    errorHandler(error, _socket, request) {
+      request.log.warn({ err: { message: (error as Error).message, code: (error as { code?: string }).code } }, "websocket error");
+    },
+  });
+  // The generous per-IP default is our own hook, added BEFORE the login gate so it also counts unauthenticated
+  // floods. Exotel/health are exempt. Counters live in PostgreSQL (shared across instances); route-level limits are
+  // preHandlers built with routeRateLimit() in security/rate-limits.ts.
   app.addHook("onRequest", globalRateLimitHook);
   registerSecurityHeaders(app);
   registerUniformNotFound(app);
@@ -93,10 +108,15 @@ export async function buildApp(
   registerPublicAccessGuard(app);
   // CORS (dashboard origin only), cookies, CSRF check, sessions, and the login gate.
   await registerAuth(app);
+  // Per-user / per-organization budgets: needs the verified session, so it runs after the login gate.
+  app.addHook("onRequest", authenticatedRateLimitHook);
 
   // Registered BEFORE the route plugins so every encapsulated route inherits it.
-  app.setErrorHandler((err, req, reply) => {
+  app.setErrorHandler((thrown, req, reply) => {
+    // Fastify 5 types the thrown value as unknown.
+    const err = translatePlanCapError(thrown) ?? (thrown instanceof Error ? thrown : new Error(String(thrown)));
     const status = errorStatus(err);
+    if (isDbAuthorizationError(err)) metrics.inc("db_authorization_errors_total");
     if (err instanceof ServiceUnavailableError) {
       logger.warn("service unavailable", { requestId: req.id, error: err.message, method: req.method }); // expected, e.g. while draining
     } else if (status >= 500) {
@@ -104,10 +124,12 @@ export async function buildApp(
       logger.error("unhandled error", { requestId: req.id, error: err.message, stack: err.stack, method: req.method });
     }
     if (err instanceof LimitExceededError && err.retryAfterSeconds) reply.header("retry-after", String(err.retryAfterSeconds));
+    if (err instanceof AuthChallengeError && err.retryAfterSeconds) reply.header("retry-after", String(err.retryAfterSeconds));
+    if (err instanceof ServiceUnavailableError && err.code === "RATE_LIMIT_UNAVAILABLE") reply.header("retry-after", "5");
     // A server that is shutting down says so plainly (its message is safe and useful); other 5xx stay generic.
     const showMessage = status < 500 || err instanceof ServiceUnavailableError;
     const body: Record<string, unknown> = { error: showMessage ? err.message : "Internal server error" };
-    if (err instanceof LimitExceededError || err instanceof ServiceUnavailableError) body.code = err.code;
+    if (err instanceof LimitExceededError || err instanceof ServiceUnavailableError || err instanceof AuthChallengeError) body.code = err.code;
     if (status >= 500) body.requestId = req.id;
     reply.status(status).send(body);
   });
@@ -119,7 +141,10 @@ export async function buildApp(
   // /health (liveness) and /ready (readiness: database up and not draining).
   await app.register(healthRoutes, { checks: opts.readinessChecks ?? [databaseCheck()] });
 
+  await app.register(metricsRoutes);
+
   await app.register(authRoutes);
+  await app.register(accountSecurityRoutes);
   await app.register(callsRoutes);
   await app.register(inboundRoutes);
   if (cfg.webCallEnabled) await app.register(webCallRoutes); // temporary browser channel, off unless WEB_CALL_ENABLED=true
@@ -132,6 +157,7 @@ export async function buildApp(
   await app.register(agentPhoneNumbersRoutes);
   await app.register(auditRoutes);
   await app.register(usageRoutes);
+  await app.register(billingRoutes);
   await app.register(toolsRoutes);
 
   // Each registered module's routes, behind a gate that refuses organizations that have not enabled the module.

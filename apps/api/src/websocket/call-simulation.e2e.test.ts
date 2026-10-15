@@ -15,15 +15,15 @@ process.env.EXOTEL_AGENTSTREAM_WEBHOOK_SECRET = ""; // baseline tests run open; 
 process.env.TURN_END_SILENCE_MS = "300"; // keep end-of-turn detection fast in tests
 
 import { buildApp } from "../app.js";
-import { db } from "../db/client.js";
+import { adminDb as db } from "../db/client.js";
 import { leads, usageEvents } from "../db/schema.js";
 import { MockTelephonyProvider, type MockTelephonyOptions } from "../adapters/telephony/mock.provider.js";
 import { setTelephonyProvider } from "../adapters/telephony/index.js";
 import { DEFAULT_CUSTOMER_TURNS, type SimulationReport } from "../simulator/call-simulator.js";
 import { projectsService } from "../modules/projects/projects.service.js";
 import { callsService } from "../modules/calls/calls.service.js";
-import { leadsRepository } from "../db/repositories/leads.repository.js";
-import { auditRepository } from "../db/repositories/audit.repository.js";
+import { leadsRepository } from "../test/repos.js";
+import { auditRepository } from "../test/repos.js";
 import { demoContext } from "../test/helpers.js";
 import type { RequestContext } from "../auth/context.js";
 

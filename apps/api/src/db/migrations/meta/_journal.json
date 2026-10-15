@@ -85,6 +85,76 @@
       "when": 1791900758199,
       "tag": "0011_fluffy_owl",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1791968272247,
+      "tag": "0012_row_level_security",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1791971730960,
+      "tag": "0013_auth_security",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1791978133601,
+      "tag": "0014_stream_tokens",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1791978528052,
+      "tag": "0015_security_event_retention",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1791981395942,
+      "tag": "0017_stream_claims",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1791981454540,
+      "tag": "0018_rate_limit_buckets",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1791981624983,
+      "tag": "0019_billing_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1791984880537,
+      "tag": "0020_entitlement_seat_caps",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1791984931706,
+      "tag": "0021_stream_grants",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1791987201799,
+      "tag": "0022_billing_grants_hardening",
+      "breakpoints": true
     }
   ]
 }

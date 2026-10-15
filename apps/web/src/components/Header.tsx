@@ -151,6 +151,14 @@ export function Header() {
                 )}
               </div>
             ) : null}
+            <Link
+              href="/account/security"
+              className={`rounded-md px-2.5 py-1.5 font-medium hover:bg-stone-100 ${
+                pathname.startsWith("/account") ? "bg-stone-100 text-stone-900" : "text-stone-600 hover:text-stone-900"
+              }`}
+            >
+              Security
+            </Link>
             <button
               onClick={() => void signOut()}
               className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 font-medium text-stone-600 hover:bg-stone-100 hover:text-stone-900"
@@ -161,6 +169,24 @@ export function Header() {
           </div>
         )}
       </div>
+      {user?.security?.mfaEnrollmentRequired && (
+        <div role="alert" className="border-t border-amber-200 bg-amber-50 px-4 py-2 text-center text-sm text-amber-900">
+          Your role requires two-step verification.{" "}
+          <Link href="/account/security" className="font-medium underline">
+            Set it up now
+          </Link>{" "}
+          to continue using the dashboard.
+        </div>
+      )}
+      {user && !user.security?.mfaEnabled && !user.security?.mfaEnrollmentRequired && (role === "OWNER" || role === "ADMIN") && user.security?.mfaEnforcement === "warn" && (
+        <div className="border-t border-stone-200 bg-stone-50 px-4 py-1.5 text-center text-xs text-stone-600">
+          Protect this admin account:{" "}
+          <Link href="/account/security" className="font-medium underline">
+            turn on two-step verification
+          </Link>
+          .
+        </div>
+      )}
     </header>
   );
 }

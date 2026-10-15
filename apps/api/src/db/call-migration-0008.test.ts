@@ -13,7 +13,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { eq } from "drizzle-orm";
 
-import { db, sql } from "./client.js";
+import { adminDb as db, adminSql } from "./client.js";
+
+// Migrations run as the administrative (owner) role, not as the restricted runtime role.
+const sql = adminSql!;
 import { agentKnowledgeBindings, calls, conversations, leads, projects } from "./schema.js";
 import { cleanupTenants, createDefaultAgent, createTenant, type TestTenant } from "../test/tenants.js";
 

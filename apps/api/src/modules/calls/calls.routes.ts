@@ -8,6 +8,7 @@ import { callsService } from "./calls.service.js";
 import { getTelephonyProvider } from "../../adapters/telephony/index.js";
 import { handleExotelMediaStream } from "../../websocket/exotel-media-stream.handler.js";
 import { isTelephonyAuthorized } from "../../security/telephony-auth.js";
+import { authenticateMediaStream } from "../../security/stream-auth.js";
 import { requireContext } from "../../auth/auth.plugin.js";
 import { systemContext } from "../../auth/context.js";
 import { logger } from "../../shared/logger.js";
@@ -127,12 +128,24 @@ export async function callsRoutes(app: FastifyInstance) {
    * through, the handler resolves the call from the start event's call_sid.
    */
   app.get("/api/telephony/exotel/media-stream", { websocket: true }, (socket, req) => {
-    if (!isTelephonyAuthorized(req)) {
-      logger.warn("media-stream: unauthorized connection rejected");
-      socket.close(1008, "unauthorized");
-      return;
-    }
-    const internalCallId = (req.query as Record<string, string | undefined>)?.internalCallId;
-    handleExotelMediaStream(socket, { internalCallId });
+    // Verification is asynchronous (signature, then a database use-count). The peer starts talking at once, so hold
+    // what arrives and replay it after the handler has attached its own listener.
+    const early: Array<{ data: Buffer; isBinary: boolean }> = [];
+    const hold = (data: Buffer, isBinary: boolean) => early.push({ data, isBinary });
+    socket.on("message", hold);
+    void authenticateMediaStream(req)
+      .then((hints) => {
+        socket.off("message", hold);
+        if (!hints) {
+          socket.close(1008, "unauthorized");
+          return;
+        }
+        handleExotelMediaStream(socket, hints);
+        for (const m of early) socket.emit("message", m.data, m.isBinary);
+      })
+      .catch((err) => {
+        logger.error("media-stream: authentication failed unexpectedly", { error: err instanceof Error ? err.message : String(err) });
+        socket.close(1011, "internal error");
+      });
   });
 }

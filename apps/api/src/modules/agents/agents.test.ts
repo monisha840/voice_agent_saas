@@ -2,9 +2,9 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { eq, inArray } from "drizzle-orm";
 
 import { buildApp } from "../../app.js";
-import { db } from "../../db/client.js";
+import { adminDb as db } from "../../db/client.js";
 import { agentKnowledgeBindings, agents, auditLogs, calls } from "../../db/schema.js";
-import { agentsRepository } from "../../db/repositories/agents.repository.js";
+import { agentsRepository } from "../../test/repos.js";
 import { systemContext } from "../../auth/context.js";
 import { cleanupTenants, createMember, createTenant, loginCookie, type TestTenant } from "../../test/tenants.js";
 import { agentsService } from "./agents.service.js";

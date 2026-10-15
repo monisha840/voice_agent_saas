@@ -2,9 +2,10 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { readFileSync } from "node:fs";
 import { eq } from "drizzle-orm";
 
-import { db } from "../client.js";
+import { adminDb as db } from "../client.js";
 import { calls, leads } from "../schema.js";
-import { callsRepository, ownCallsVisibility } from "./calls.repository.js";
+import { ownCallsVisibility } from "./calls.repository.js";
+import { callsRepository } from "../../test/repos.js";
 import { salesCallVisibility } from "../../modules/sales/sales-call-hooks.js";
 import { cleanupTenants, createMember, createTenant, type TestTenant } from "../../test/tenants.js";
 

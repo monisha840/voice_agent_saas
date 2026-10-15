@@ -3,6 +3,7 @@
  * status callbacks that close the call. Tenant isolation, unknown numbers, the Sales module being optional, limits and
  * shutdown are all checked here. Only external providers are mocked.
  */
+import { agentPhoneNumbersRepository as realAgentPhoneNumbersRepository } from "../../db/repositories/agent-phone-numbers.repository.js";
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 
@@ -12,12 +13,12 @@ process.env.EXOTEL_AGENTSTREAM_WEBHOOK_SECRET = "";
 process.env.MOCK_TELEPHONY_AUTOPLAY = "false";
 process.env.TURN_END_SILENCE_MS = "300";
 
-import { db } from "../../db/client.js";
+import { adminDb as db } from "../../db/client.js";
 import { auditLogs, calls, leads, usageEvents } from "../../db/schema.js";
 import { systemContext } from "../../auth/context.js";
 import { setTelephonyProvider } from "../../adapters/telephony/index.js";
-import { agentPhoneNumbersRepository } from "../../db/repositories/agent-phone-numbers.repository.js";
-import { conversationsRepository } from "../../db/repositories/conversations.repository.js";
+import { agentPhoneNumbersRepository } from "../../test/repos.js";
+import { conversationsRepository } from "../../test/repos.js";
 import { lifecycle } from "../../runtime/lifecycle.js";
 import { cleanupTenants, createDefaultAgent, createMember, createTenant, loginCookie, type TestTenant } from "../../test/tenants.js";
 import { getCallRow, httpClient, randomPhone, relaxRateLimits, startTestApp, waitForSummary } from "../../test/agent-first.js";
@@ -313,7 +314,7 @@ describe("limits and shutdown apply to inbound calls", () => {
   it("an internal failure is 500 (so the provider retries) and creates nothing; the retry then succeeds", async () => {
     const callSid = sid();
     const params = { CallSid: callSid, CallTo: numA, CallFrom: randomPhone() };
-    vi.spyOn(agentPhoneNumbersRepository, "findByNumberAnyOrg").mockRejectedValueOnce(new Error("database is down"));
+    vi.spyOn(realAgentPhoneNumbersRepository, "findByNumberAnyOrg").mockRejectedValueOnce(new Error("database is down"));
     const before = await callCount(A.orgId);
     const failed = await webhook(params);
     expect(failed.status).toBe(500);

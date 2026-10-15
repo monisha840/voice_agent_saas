@@ -6,6 +6,7 @@
  * startup (see modules/sales/index.ts); the core then calls the hooks that exist. With no hooks registered
  * every call is simply a call: no lead, no module context, nothing extra to update afterwards.
  */
+import { tenantScoped } from "../../auth/tenant-scoped.js";
 import { or, type SQL } from "drizzle-orm";
 import type { RequestContext } from "../../auth/context.js";
 import type { PromptParams } from "../ai-agent/persona.js";
@@ -79,7 +80,7 @@ export function clearCallHooks(): void {
   registered.clear();
 }
 
-export const callHooks = {
+const callHooksImpl = {
   async pickAgentForLead(ctx: RequestContext, params: { leadId: string }): Promise<string | null> {
     for (const h of registered.values()) {
       const id = await h.pickAgentForLead?.(ctx, params);
@@ -141,3 +142,5 @@ export const callHooks = {
     return null;
   },
 };
+
+export const callHooks = tenantScoped(callHooksImpl);
