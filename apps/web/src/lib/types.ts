@@ -94,6 +94,7 @@ export interface Lead {
 export interface Call {
   id: string;
   leadId: string;
+  callType?: CallType;
   providerCallId: string | null;
   status: CallStatus;
   startedAt: string | null;
@@ -264,6 +265,8 @@ export type CallType = "outbound" | "inbound" | "test";
 export interface CallDetail {
   id: string;
   leadId: string | null;
+  /** Inbound calls: the number the caller dialled (one of the organization's phone numbers). */
+  lineNumber?: string | null;
   providerCallId: string | null;
   status: CallStatus;
   startedAt: string | null;
@@ -348,4 +351,57 @@ export interface OrganizationModule {
   label: string;
   description: string;
   enabled: boolean;
+}
+
+/** upcoming = booked and still ahead; past = booked and its time has passed (attendance is not recorded). */
+export type SiteVisitView = "upcoming" | "past" | "cancelled" | "all";
+
+/** A site visit with its lead and project names, as listed by the paged endpoint. */
+export interface SiteVisitDetail {
+  id: string;
+  leadId: string;
+  projectId: string;
+  scheduledAt: string;
+  status: "booked" | "cancelled";
+  createdAt: string;
+  leadName: string;
+  leadPhone: string;
+  leadStatus: LeadStatus;
+  projectName: string;
+}
+
+export interface DailyCount {
+  day: string;
+  total: number;
+}
+
+/** Overview call aggregates (only the calls this user may see). */
+export interface CallStats {
+  days: number;
+  from: string;
+  timeZone: string;
+  total: number;
+  answered: number;
+  completed: number;
+  failed: number;
+  active: number;
+  talkSeconds: number;
+  daily: Array<DailyCount & { answered: number }>;
+}
+
+/** Overview Sales aggregates. Sections the role cannot read are null. */
+export interface SalesOverview {
+  days: number;
+  from: string;
+  timeZone: string;
+  leads: {
+    total: number;
+    newInWindow: number;
+    interested: number;
+    visitStage: number;
+    byStatus: Partial<Record<LeadStatus, number>>;
+    daily: DailyCount[];
+  } | null;
+  recentLeads: Lead[] | null;
+  upcomingVisits: { total: number; data: SiteVisitDetail[] } | null;
 }

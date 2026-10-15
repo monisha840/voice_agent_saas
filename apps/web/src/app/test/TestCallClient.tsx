@@ -15,8 +15,21 @@ type Target = "simulated" | "phone" | "lead" | "web";
 const WEB_CALL_ENABLED = process.env.NEXT_PUBLIC_WEB_CALL_ENABLED === "true";
 const POLL_MS = 2000;
 
-export function TestCallClient({ agents, leads, sales }: { agents: AgentOption[]; leads: Lead[]; sales: boolean }) {
-  const [agentId, setAgentId] = useState(agents[0]?.id ?? "") // the API lists the default agent first;
+export function TestCallClient({
+  agents,
+  leads,
+  sales,
+  initialAgentId,
+}: {
+  agents: AgentOption[];
+  leads: Lead[];
+  sales: boolean;
+  /** Preselect this agent (from "Test this agent"); ignored unless it is one of the active agents listed. */
+  initialAgentId?: string;
+}) {
+  const [agentId, setAgentId] = useState(
+    agents.some((a) => a.id === initialAgentId) ? initialAgentId! : (agents[0]?.id ?? ""),
+  ) // the API lists the default agent first;
   const [target, setTarget] = useState<Target>("simulated");
   // Web call only: talk as one of the leads, so slots, bookings and follow-ups work as they do on a real call.
   const [webLeadId, setWebLeadId] = useState("");

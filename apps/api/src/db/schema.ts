@@ -24,6 +24,7 @@ import {
   uniqueIndex,
   foreignKey,
   unique,
+  customType,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
@@ -198,6 +199,8 @@ export const calls = pgTable(
   /** The other party: the callee for outbound/test calls, the caller for inbound calls (E.164 when known). */
   counterpartyNumber: varchar("counterparty_number", { length: 32 }),
   counterpartyName: varchar("counterparty_name", { length: 255 }),
+  /** Our number the call came in on (inbound: the dialed number, E.164). Kept when the number is later removed. */
+  lineNumber: varchar("line_number", { length: 32 }),
   initiatedByUserId: uuid("initiated_by_user_id").references(() => users.id, { onDelete: "set null" }),
   providerCallId: varchar("provider_call_id", { length: 255 }),
   status: callStatusEnum("status").notNull().default("initiating"),
@@ -225,6 +228,7 @@ export const calls = pgTable(
     providerCallUnique: uniqueIndex("calls_provider_call_id_unique").on(t.providerCallId),
     leadIdx: index("calls_lead_idx").on(t.leadId),
     orgCreatedIdx: index("calls_org_created_idx").on(t.organizationId, t.createdAt),
+    orgLineIdx: index("calls_org_line_created_idx").on(t.organizationId, t.lineNumber, t.createdAt),
     statusIdx: index("calls_status_idx").on(t.status),
   }),
 );
@@ -745,7 +749,22 @@ export const agentPhoneNumbers = pgTable(
     agentId: uuid("agent_id").notNull(),
     phoneNumber: varchar("phone_number", { length: 32 }).notNull(),
     label: varchar("label", { length: 100 }),
+    /** Paused numbers stay assigned but inbound calls on them are refused (number management, migration 0024). */
+    routingEnabled: boolean("routing_enabled").notNull().default(true),
+    /** Last inbound call accepted on this number. */
+    lastInboundAt: timestamp("last_inbound_at", { withTimezone: true }),
+    /** Inbound attempts refused on this number (paused, agent not active, organization limit, ...). */
+    refusedCount: integer("refused_count").notNull().default(0),
+    lastRefusedAt: timestamp("last_refused_at", { withTimezone: true }),
+    lastRefusedReason: varchar("last_refused_reason", { length: 40 }),
+    /** Provider call id of the last refused attempt: a retried webhook for the same call is not counted twice. */
+    lastRefusedCallId: varchar("last_refused_call_id", { length: 255 }),
+    /** Result of the last provider-side check of this number ("verified" | "not_found" | "error" | "unsupported"). */
+    providerStatus: varchar("provider_status", { length: 20 }),
+    providerDetail: varchar("provider_detail", { length: 300 }),
+    providerCheckedAt: timestamp("provider_checked_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
     agentFk: foreignKey({
@@ -1021,5 +1040,106 @@ export const billingEvents = pgTable(
   (t) => ({
     eventUnique: uniqueIndex("billing_events_provider_event_unique").on(t.provider, t.providerEventId),
     orgIdx: index("billing_events_org_idx").on(t.organizationId, t.createdAt),
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Knowledge base (migration 0023): reusable, organization-owned knowledge (FAQs, business information, uploaded text
+// documents split into passages) that agents are bound to through agent_knowledge_bindings (source_type
+// "knowledge_base") and search during a conversation with the core `search_knowledge` tool.
+// ---------------------------------------------------------------------------
+
+const tsvector = customType<{ data: string }>({ dataType: () => "tsvector" });
+
+export const knowledgeBases = pgTable(
+  "knowledge_bases",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    name: varchar("name", { length: 120 }).notNull(),
+    description: text("description"),
+    /** "active" | "archived". Archived knowledge is never searched. */
+    status: varchar("status", { length: 20 }).notNull().default("active"),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    orgIdUnique: unique("knowledge_bases_org_id_id_unique").on(t.organizationId, t.id),
+    nameUnique: uniqueIndex("knowledge_bases_org_name_unique")
+      .on(t.organizationId, sql`lower(${t.name})`)
+      .where(sql`${t.status} = 'active'`),
+  }),
+);
+
+export const knowledgeDocuments = pgTable(
+  "knowledge_documents",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    knowledgeBaseId: uuid("knowledge_base_id").notNull(),
+    filename: varchar("filename", { length: 255 }).notNull(),
+    contentType: varchar("content_type", { length: 100 }).notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    /** SHA-256 of the uploaded bytes (duplicate detection, audit). The bytes themselves are not stored. */
+    sha256: varchar("sha256", { length: 64 }).notNull(),
+    /** "processing" | "ready" | "failed". */
+    status: varchar("status", { length: 20 }).notNull().default("processing"),
+    error: text("error"),
+    chunkCount: integer("chunk_count").notNull().default(0),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    orgIdUnique: unique("knowledge_documents_org_id_id_unique").on(t.organizationId, t.id),
+    kbFk: foreignKey({
+      name: "knowledge_documents_org_kb_fk",
+      columns: [t.organizationId, t.knowledgeBaseId],
+      foreignColumns: [knowledgeBases.organizationId, knowledgeBases.id],
+    }).onDelete("cascade"),
+    kbIdx: index("knowledge_documents_kb_idx").on(t.organizationId, t.knowledgeBaseId),
+  }),
+);
+
+export const knowledgeItems = pgTable(
+  "knowledge_items",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    knowledgeBaseId: uuid("knowledge_base_id").notNull(),
+    /** Set for passages extracted from an uploaded document (deleted with it). */
+    documentId: uuid("document_id"),
+    /** "faq" (title = question, body = answer) | "info" (title = topic) | "document" (a passage of a document). */
+    kind: varchar("kind", { length: 20 }).notNull(),
+    title: varchar("title", { length: 300 }).notNull().default(""),
+    body: text("body").notNull(),
+    position: integer("position").notNull().default(0),
+    /** Full-text index of title + body ('simple' configuration: no language-specific stemming, works for any script). */
+    search: tsvector("search").generatedAlwaysAs(
+      sql`setweight(to_tsvector('simple', coalesce(title, '')), 'A') || setweight(to_tsvector('simple', coalesce(body, '')), 'B')`,
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    kbFk: foreignKey({
+      name: "knowledge_items_org_kb_fk",
+      columns: [t.organizationId, t.knowledgeBaseId],
+      foreignColumns: [knowledgeBases.organizationId, knowledgeBases.id],
+    }).onDelete("cascade"),
+    docFk: foreignKey({
+      name: "knowledge_items_org_document_fk",
+      columns: [t.organizationId, t.documentId],
+      foreignColumns: [knowledgeDocuments.organizationId, knowledgeDocuments.id],
+    }).onDelete("cascade"),
+    kbIdx: index("knowledge_items_kb_idx").on(t.organizationId, t.knowledgeBaseId, t.position),
+    searchIdx: index("knowledge_items_search_idx").using("gin", t.search),
   }),
 );

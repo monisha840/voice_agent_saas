@@ -245,7 +245,8 @@ describe("route registration is module-driven: the bare core (no modules)", () =
 
   it("Sales tools are not offered", async () => {
     const tools = (await http(owner, "GET", "/api/tools")).body.data as Array<{ name: string }>;
-    expect(tools.map((t) => t.name)).toEqual(["end_call"]);
+    // Only the core tools: end_call and the knowledge-base search (modules/knowledge/knowledge-core.ts).
+    expect(tools.map((t) => t.name)).toEqual(["end_call", "search_knowledge"]);
   });
 });
 

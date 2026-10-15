@@ -10,12 +10,20 @@ import { CallTypeBadge } from "@/components/CallTypeBadge";
 import { CallStatusBadge } from "@/components/CallStatusBadge";
 import { Card } from "@/components/ui";
 
+const SITE_VISIT_LABEL: Record<string, string> = {
+  booked: "Booked",
+  offered: "Offered",
+  declined: "Declined",
+  not_discussed: "Not discussed",
+};
+
 export default async function CallDetailPage({ params: paramsPromise }: { params: Promise<{ id: string }> }) {
   const params = await paramsPromise;
   try {
     const [call, me] = await Promise.all([api.getCall(params.id), api.me()]);
     const conversation = call.conversation;
     const transcript = conversation?.transcript ?? [];
+    const qualification = conversation?.qualification ?? null;
     // The lead link is a Sales-module feature; a call itself never requires a lead.
     // The agent's name is shown to everyone who can see the call; the editor link only to roles that may read agents.
     const canOpenAgent = can(me.organization?.role, "agents:read");
@@ -62,9 +70,77 @@ export default async function CallDetailPage({ params: paramsPromise }: { params
           <CallStatusBadge status={call.status} />
         </section>
 
+        <div className="mt-6 grid gap-6 lg:grid-cols-3">
+          <Card title="Call details">
+            <dl className="space-y-2 text-sm">
+              {(
+                [
+                  ["Placed", formatDateTime(call.createdAt)],
+                  ["Answered", call.startedAt ? formatDateTime(call.startedAt) : "Not answered"],
+                  ["Ended", call.endedAt ? formatDateTime(call.endedAt) : call.status === "completed" || call.status === "failed" ? "Not recorded" : "Still in progress"],
+                  ["Talk time", call.startedAt && call.endedAt ? formatDuration(call.startedAt, call.endedAt) : "—"],
+                  // Inbound only: the number the caller dialled. Older calls predate it, so it can be missing.
+                  ...(call.callType === "inbound" ? ([["Line", call.lineNumber ?? "Not recorded"]] as const) : []),
+                ] as const
+              ).map(([k, v]) => (
+                <div key={k} className="flex justify-between gap-3">
+                  <dt className="text-stone-500">{k}</dt>
+                  <dd className="text-right text-stone-900">{v}</dd>
+                </div>
+              ))}
+            </dl>
+          </Card>
+
+          <Card title="Outcome">
+            {qualification ? (
+              <dl className="space-y-2 text-sm">
+                <div className="flex justify-between gap-3">
+                  <dt className="text-stone-500">Interest</dt>
+                  <dd className="capitalize text-stone-900">{qualification.interestLevel}</dd>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <dt className="text-stone-500">Site visit</dt>
+                  <dd className="text-stone-900">{SITE_VISIT_LABEL[qualification.siteVisitStatus] ?? qualification.siteVisitStatus}</dd>
+                </div>
+                {qualification.budget && (
+                  <div className="flex justify-between gap-3">
+                    <dt className="text-stone-500">Budget</dt>
+                    <dd className="text-right text-stone-900">{qualification.budget}</dd>
+                  </div>
+                )}
+                <p className="pt-2 text-xs text-stone-400">From the post-call summary of this conversation.</p>
+              </dl>
+            ) : (
+              <p className="text-sm text-stone-500">No outcome recorded for this call.</p>
+            )}
+            {leadLink && (
+              <p className="mt-3 text-xs text-stone-500">
+                Bookings made on the call are listed on the{" "}
+                <Link href={leadLink} className="font-medium text-emerald-700 hover:text-emerald-800">
+                  lead&apos;s page
+                </Link>
+                .
+              </p>
+            )}
+          </Card>
+
+          <Card title="Recording">
+            {call.recordingUrl ? (
+              <>
+                <audio controls preload="none" src={call.recordingUrl} className="w-full">
+                  <a href={call.recordingUrl}>Open recording</a>
+                </audio>
+                <p className="mt-2 text-xs text-stone-400">Hosted by your telephony provider.</p>
+              </>
+            ) : (
+              <p className="text-sm text-stone-500">No recording was stored for this call.</p>
+            )}
+          </Card>
+        </div>
+
         <div className="mt-6 space-y-6">
           <Card title="Summary">
-            <p className="text-sm text-stone-700">{conversation?.summary ?? "No summary yet."}</p>
+            <p className="text-sm text-stone-700">{conversation?.summary ?? "No summary was recorded for this call."}</p>
             {conversation?.qualification?.recommendedNextAction && (
               <p className="mt-3 text-sm text-stone-500">
                 Recommended next action: {conversation.qualification.recommendedNextAction}

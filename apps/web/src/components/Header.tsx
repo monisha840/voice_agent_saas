@@ -10,9 +10,9 @@ import { ORG_MODULES_CHANGED_EVENT, hasModule } from "@/lib/modules";
 import { Badge } from "@/components/ui";
 
 /**
- * Top navigation. The Voice AI core (Overview, Agents, Calls, Test, Usage, Team,
- * Settings) is always present; optional modules add their own group after a
- * divider, shown only when the organization has the module enabled. Items are
+ * Top navigation: daily work first (Overview, Agents, Knowledge, Numbers, Projects, Leads, Calls, Site Visits, Follow-ups), then tools and
+ * administration (Test, Usage, Team, Settings). Sales items appear only when the organization has the module
+ * enabled. Items are
  * shown only to roles that can use them; the API enforces the same rules regardless.
  */
 export function Header() {
@@ -45,25 +45,29 @@ export function Header() {
   const role = org?.role ?? null;
   const orgs = user?.organizations ?? [];
 
+  const sales = hasModule(org, "sales");
+  // Daily work first (Sales items only when the module is on), then the tools and administration.
   const coreItems = [
     { label: "Overview", href: "/", active: pathname === "/", show: true },
     { label: "Agents", href: "/agents", active: pathname.startsWith("/agents"), show: can(role, "agents:read") },
+    // Core (no module): knowledge bases are read with agents:read and changed with agents:manage (the API enforces both).
+    { label: "Knowledge", href: "/knowledge", active: pathname.startsWith("/knowledge"), show: can(role, "agents:read") },
+    // Phone numbers and inbound routing: readable with agents:read, changed with agents:manage (the API enforces both).
+    { label: "Numbers", href: "/numbers", active: pathname.startsWith("/numbers"), show: can(role, "agents:read") },
+    { label: "Projects", href: "/projects", active: pathname.startsWith("/projects"), show: sales },
+    { label: "Leads", href: "/leads", active: pathname.startsWith("/leads"), show: sales },
     { label: "Calls", href: "/calls", active: pathname.startsWith("/calls"), show: can(role, "calls:read") },
+    { label: "Site Visits", href: "/site-visits", active: pathname.startsWith("/site-visits"), show: sales },
+    { label: "Follow-ups", href: "/follow-ups", active: pathname.startsWith("/follow-ups"), show: sales },
+  ].filter((i) => i.show);
+
+  const toolItems = [
     { label: "Test", href: "/test", active: pathname.startsWith("/test"), show: can(role, "calls:create") },
     { label: "Usage", href: "/usage", active: pathname.startsWith("/usage"), show: can(role, "usage:read") },
     { label: "Team", href: "/team", active: pathname.startsWith("/team"), show: can(role, "users:read") },
     { label: "Settings", href: "/settings", active: pathname.startsWith("/settings"), show: can(role, "audit:read") },
+    { label: "Demo", href: "/demo", active: pathname === "/demo", show: sales },
   ].filter((i) => i.show);
-
-  const salesItems = hasModule(org, "sales")
-    ? [
-        { label: "Leads", href: "/leads", active: pathname.startsWith("/leads") },
-        { label: "Projects", href: "/projects", active: pathname.startsWith("/projects") },
-        { label: "Site Visits", href: "/site-visits", active: pathname.startsWith("/site-visits") },
-        { label: "Follow-ups", href: "/follow-ups", active: pathname.startsWith("/follow-ups") },
-        { label: "Demo", href: "/demo", active: pathname === "/demo" },
-      ]
-    : [];
 
   async function switchOrg(organizationId: string) {
     setBusy(true);
@@ -105,11 +109,10 @@ export function Header() {
           {coreItems.map((item) => (
             <NavLink key={item.label} {...item} />
           ))}
-          {salesItems.length > 0 && (
+          {toolItems.length > 0 && (
             <>
               <span aria-hidden className="mx-1 h-5 w-px shrink-0 bg-stone-200" />
-              <span className="shrink-0 px-1 text-xs font-medium uppercase tracking-wide text-stone-400">Sales</span>
-              {salesItems.map((item) => (
+              {toolItems.map((item) => (
                 <NavLink key={item.label} {...item} />
               ))}
             </>

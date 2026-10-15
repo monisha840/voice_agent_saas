@@ -43,6 +43,10 @@ export async function agentsRoutes(app: FastifyInstance) {
     return reply.send({ data: await agentsService.unarchive(requireContext(req), idOf(req.params)) });
   });
 
+  app.post("/api/agents/:id/duplicate", async (req, reply) => {
+    return reply.status(201).send({ data: await agentsService.duplicate(requireContext(req), idOf(req.params)) });
+  });
+
   app.post("/api/agents/:id/set-default", async (req, reply) => {
     return reply.send({ data: await agentsService.setDefault(requireContext(req), idOf(req.params)) });
   });

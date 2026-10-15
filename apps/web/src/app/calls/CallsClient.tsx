@@ -14,6 +14,15 @@ const STATUSES: CallStatus[] = ["initiating", "ringing", "in_progress", "complet
 const TYPES: CallType[] = ["outbound", "inbound", "test"];
 const PAGE = 25;
 
+type Outcome = "" | "answered" | "unanswered";
+
+/** Local midnight of a YYYY-MM-DD date input (plus `addDays`), as ISO; undefined when empty. */
+function dayStart(day: string, addDays = 0): string | undefined {
+  if (!day) return undefined;
+  const [y, m, d] = day.split("-").map(Number);
+  return new Date(y, m - 1, d + addDays).toISOString();
+}
+
 export function CallsClient({
   initial,
   initialNext,
@@ -28,16 +37,28 @@ export function CallsClient({
   const [status, setStatus] = useState<CallStatus | "">("");
   const [agentId, setAgentId] = useState("");
   const [callType, setCallType] = useState<CallType | "">("");
+  const [outcome, setOutcome] = useState<Outcome>("");
+  const [fromDay, setFromDay] = useState("");
+  const [toDay, setToDay] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  type Filters = { status: CallStatus | ""; agentId: string; callType: CallType | "" };
+  type Filters = { status: CallStatus | ""; agentId: string; callType: CallType | ""; outcome: Outcome; fromDay: string; toDay: string };
 
   async function load(f: Filters, before: string | null) {
     setBusy(true);
     setError(null);
     try {
-      const page = await api.listCalls({ limit: PAGE, before, status: f.status, agentId: f.agentId, callType: f.callType });
+      const page = await api.listCalls({
+        limit: PAGE,
+        before,
+        status: f.status,
+        agentId: f.agentId,
+        callType: f.callType,
+        outcome: f.outcome,
+        from: dayStart(f.fromDay),
+        to: dayStart(f.toDay, 1),
+      });
       setCalls((prev) => (before ? [...prev, ...page.data] : page.data));
       setNext(page.nextBefore);
     } catch (err) {
@@ -47,15 +68,18 @@ export function CallsClient({
     }
   }
 
-  const filters: Filters = { status, agentId, callType };
+  const filters: Filters = { status, agentId, callType, outcome, fromDay, toDay };
   function change(patch: Partial<Filters>) {
     const nextFilters = { ...filters, ...patch };
     setStatus(nextFilters.status);
     setAgentId(nextFilters.agentId);
     setCallType(nextFilters.callType);
+    setOutcome(nextFilters.outcome);
+    setFromDay(nextFilters.fromDay);
+    setToDay(nextFilters.toDay);
     void load(nextFilters, null);
   }
-  const filtered = status || agentId || callType;
+  const filtered = status || agentId || callType || outcome || fromDay || toDay;
 
   return (
     <Card
@@ -106,9 +130,53 @@ export function CallsClient({
               </option>
             ))}
           </select>
+          <select
+            aria-label="Filter by outcome"
+            value={outcome}
+            disabled={busy}
+            onChange={(e) => change({ outcome: e.target.value as Outcome })}
+            className={`${inputClass} w-40`}
+          >
+            <option value="">Any outcome</option>
+            <option value="answered">Answered</option>
+            <option value="unanswered">Not answered</option>
+          </select>
         </div>
       }
     >
+      <div className="-mt-1 mb-4 flex flex-wrap items-end gap-3 text-sm">
+        <label className="block">
+          <span className="mb-1 block text-xs font-medium text-stone-500">From</span>
+          <input
+            type="date"
+            value={fromDay}
+            max={toDay || undefined}
+            disabled={busy}
+            onChange={(e) => change({ fromDay: e.target.value })}
+            className={`${inputClass} w-40`}
+          />
+        </label>
+        <label className="block">
+          <span className="mb-1 block text-xs font-medium text-stone-500">To</span>
+          <input
+            type="date"
+            value={toDay}
+            min={fromDay || undefined}
+            disabled={busy}
+            onChange={(e) => change({ toDay: e.target.value })}
+            className={`${inputClass} w-40`}
+          />
+        </label>
+        {filtered && (
+          <Button
+            variant="ghost"
+            disabled={busy}
+            onClick={() => change({ status: "", agentId: "", callType: "", outcome: "", fromDay: "", toDay: "" })}
+          >
+            Clear filters
+          </Button>
+        )}
+      </div>
       {calls.length === 0 ? (
         <EmptyState title="No calls" description={filtered ? "No calls match this filter." : "Calls will appear here once an agent makes one."} />
       ) : (

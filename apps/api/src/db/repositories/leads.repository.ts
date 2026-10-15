@@ -1,4 +1,4 @@
-import { and, desc, eq, getTableColumns, inArray, ne, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, gte, ilike, inArray, like, ne, or, sql, type SQL } from "drizzle-orm";
 import { db } from "../client.js";
 import { leads, users, type leadStatusEnum } from "../schema.js";
 import type { LeadScope } from "../../auth/scope.js";
@@ -12,6 +12,37 @@ export function scopeCondition(scope?: LeadScope): SQL | undefined {
     return scope.projectIds.length > 0 ? inArray(leads.projectId, scope.projectIds) : sql`false`;
   }
   return eq(leads.assignedUserId, scope.userId);
+}
+
+export interface LeadListParams {
+  organizationId: string;
+  scope?: LeadScope;
+  status?: LeadStatus;
+  projectId?: string;
+  assignedTo?: string;
+  /** Case-insensitive match on the name, or on the phone number's digits. */
+  search?: string;
+}
+
+/** LIKE wildcards in user input are matched literally. */
+const likeEscape = (s: string) => s.replace(/[\\%_]/g, (c) => `\\${c}`);
+
+function listCondition(params: LeadListParams): SQL | undefined {
+  const term = params.search?.trim();
+  const digits = term?.replace(/\D/g, "") ?? "";
+  return and(
+    eq(leads.organizationId, params.organizationId),
+    scopeCondition(params.scope),
+    params.status ? eq(leads.status, params.status) : undefined,
+    params.projectId ? eq(leads.projectId, params.projectId) : undefined,
+    params.assignedTo ? eq(leads.assignedUserId, params.assignedTo) : undefined,
+    term
+      ? or(
+          ilike(leads.name, `%${likeEscape(term)}%`),
+          digits.length >= 3 ? like(leads.phone, `%${digits}%`) : undefined,
+        )
+      : undefined,
+  );
 }
 
 /**
@@ -32,27 +63,38 @@ export const leadsRepository = {
   },
 
   /** Filters are ANDed with the organization and scope conditions, so they can only narrow the result. */
-  async list(params: {
-    organizationId: string;
-    scope?: LeadScope;
-    status?: LeadStatus;
-    projectId?: string;
-    assignedTo?: string;
-  }) {
-    return db
+  async list(params: LeadListParams & { limit?: number; offset?: number }) {
+    const query = db
       .select({ ...getTableColumns(leads), assigneeName: users.name })
       .from(leads)
       .leftJoin(users, eq(users.id, leads.assignedUserId))
-      .where(
-        and(
-          eq(leads.organizationId, params.organizationId),
-          scopeCondition(params.scope),
-          params.status ? eq(leads.status, params.status) : undefined,
-          params.projectId ? eq(leads.projectId, params.projectId) : undefined,
-          params.assignedTo ? eq(leads.assignedUserId, params.assignedTo) : undefined,
-        ),
-      )
-      .orderBy(desc(leads.createdAt));
+      .where(listCondition(params))
+      .orderBy(desc(leads.createdAt), desc(leads.id));
+    return params.limit !== undefined ? query.limit(params.limit).offset(params.offset ?? 0) : query;
+  },
+
+  /** How many leads `list` would return without paging (same conditions). */
+  async count(params: LeadListParams) {
+    const [row] = await db.select({ n: sql<number>`count(*)::int` }).from(leads).where(listCondition(params));
+    return row.n;
+  },
+
+  /** Dashboard aggregates over the leads in scope: count per status, and leads created per day since `from`. */
+  async stats(params: { organizationId: string; scope?: LeadScope; from: Date; timeZone: string }) {
+    const where = and(eq(leads.organizationId, params.organizationId), scopeCondition(params.scope));
+    const byStatus = await db
+      .select({ status: leads.status, n: sql<number>`count(*)::int` })
+      .from(leads)
+      .where(where)
+      .groupBy(leads.status);
+    const day = sql<string>`to_char(${leads.createdAt} at time zone ${params.timeZone}, 'YYYY-MM-DD')`;
+    const daily = await db
+      .select({ day, total: sql<number>`count(*)::int` })
+      .from(leads)
+      .where(and(where, gte(leads.createdAt, params.from)))
+      .groupBy(sql`1`) // positional: a repeated time-zone parameter would not match the select expression
+      .orderBy(sql`1`);
+    return { byStatus, daily };
   },
 
   async create(params: {

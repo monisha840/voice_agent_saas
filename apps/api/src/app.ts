@@ -11,6 +11,9 @@ import { agentsRoutes } from "./modules/agents/agents.routes.js";
 import { auditRoutes } from "./modules/audit/audit.routes.js";
 import { usageRoutes } from "./modules/usage/usage.routes.js";
 import { billingRoutes } from "./modules/billing/billing.routes.js";
+import { knowledgeRoutes } from "./modules/knowledge/knowledge.routes.js";
+import { registerKnowledgeCore } from "./modules/knowledge/knowledge-core.js";
+import { playgroundRoutes } from "./modules/playground/playground.routes.js";
 import { translatePlanCapError } from "./modules/billing/cap-errors.js";
 import { modulesRoutes } from "./modules/modules/modules.routes.js";
 import { toolsRoutes } from "./modules/tools/tools.routes.js";
@@ -21,6 +24,7 @@ import type { ModuleManifest } from "./modules/modules/module-contract.js";
 import { webCallRoutes } from "./modules/calls/web-call.routes.js";
 import { demoPropertyRoutes } from "./modules/projects/demo-property.routes.js";
 import { agentPhoneNumbersRoutes } from "./modules/agents/agent-phone-numbers.routes.js";
+import { numbersRoutes } from "./modules/numbers/numbers.routes.js";
 import { inboundRoutes } from "./modules/calls/inbound.routes.js";
 import { metrics, isDbAuthorizationError } from "./runtime/metrics.js";
 import { metricsRoutes } from "./runtime/metrics.routes.js";
@@ -137,6 +141,8 @@ export async function buildApp(
   // Optional modules (Sales, ...) plug in through their manifests: tools, call hooks, prompt templates, permissions,
   // data scopes. Idempotent; this app then serves exactly the modules listed.
   syncModules(opts.modules ?? CONFIGURED_MODULES);
+  // The knowledge base is core (never switched off): its knowledge source, call hook and search_knowledge tool.
+  registerKnowledgeCore();
 
   // /health (liveness) and /ready (readiness: database up and not draining).
   await app.register(healthRoutes, { checks: opts.readinessChecks ?? [databaseCheck()] });
@@ -155,9 +161,12 @@ export async function buildApp(
   await app.register(agentConfigRoutes);
   await app.register(agentsRoutes);
   await app.register(agentPhoneNumbersRoutes);
+  await app.register(numbersRoutes);
   await app.register(auditRoutes);
   await app.register(usageRoutes);
   await app.register(billingRoutes);
+  await app.register(knowledgeRoutes);
+  await app.register(playgroundRoutes);
   await app.register(toolsRoutes);
 
   // Each registered module's routes, behind a gate that refuses organizations that have not enabled the module.

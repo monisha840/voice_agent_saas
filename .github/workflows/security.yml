@@ -152,9 +152,11 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      # One throwaway server, two suites run SERIALLY in this job, each with its own database, login role and ports:
+      # One throwaway server, four suites run SERIALLY in this job, each with its own database, login role and ports:
       #   e2e/run.mjs          -> voice_agent_ui_test / voice_app_uitest, API :4100, web :3100 (next dev)
       #   e2e/billing-run.mjs  -> voice_agent_billing_ui_test / voice_app_billuitest, API :4291, web :3291 (next build+start)
+      #   e2e/dashboard-run.mjs -> voice_agent_dashboard_ui_test / voice_app_dashuitest, API :4391, web :3391 (next build+start)
+      #   e2e/knowledge-run.mjs -> voice_agent_kb_ui_test / voice_app_kbuitest, API :4491, web :3491 (next build+start)
       # Each runner creates its database at start and drops it (and its role) at exit.
       E2E_ADMIN_URL: postgresql://postgres:postgres@localhost:5432/postgres
     steps:
@@ -187,6 +189,30 @@ jobs:
         env:
           E2E_LOG_DIR: ${{ github.workspace }}/e2e-logs/billing
         run: pnpm --filter @voice-agent/web e2e:billing
+      - name: Keep billing e2e failure screenshots
+        if: ${{ !cancelled() }}
+        run: |
+          if [ -d apps/web/test-results ]; then
+            mkdir -p e2e-logs/billing
+            mv apps/web/test-results e2e-logs/billing/test-results
+          fi
+      - name: Customer dashboard e2e (production web build)
+        if: ${{ !cancelled() && steps.pw.outcome == 'success' }}
+        env:
+          E2E_LOG_DIR: ${{ github.workspace }}/e2e-logs/dashboard
+        run: pnpm --filter @voice-agent/web e2e:dashboard
+      - name: Keep dashboard e2e failure screenshots
+        if: ${{ !cancelled() }}
+        run: |
+          if [ -d apps/web/test-results ]; then
+            mkdir -p e2e-logs/dashboard
+            mv apps/web/test-results e2e-logs/dashboard/test-results
+          fi
+      - name: Knowledge base and playground e2e (production web build)
+        if: ${{ !cancelled() && steps.pw.outcome == 'success' }}
+        env:
+          E2E_LOG_DIR: ${{ github.workspace }}/e2e-logs/knowledge
+        run: pnpm --filter @voice-agent/web e2e:knowledge
       - name: Upload server logs and failure screenshots
         if: failure()
         uses: actions/upload-artifact@v4

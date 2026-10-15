@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { api } from "@/lib/api.server";
 import { can } from "@/lib/permissions";
 import { ErrorState } from "@/components/StateViews";
@@ -20,7 +21,15 @@ export default async function AgentsPage() {
     }
     const agents = await api.listAgents(true);
     return (
-      <PageShell title="Agents" subtitle="Each agent has its own persona, prompt, tools and knowledge.">
+      <PageShell
+        title="Agents"
+        subtitle="Each agent has its own persona, prompt, tools and knowledge."
+        actions={
+          <Link href="/knowledge" className="text-sm font-medium text-emerald-700 hover:text-emerald-800">
+            Knowledge base
+          </Link>
+        }
+      >
         <AgentListClient agents={agents} canManage={can(role, "agents:manage")} />
       </PageShell>
     );

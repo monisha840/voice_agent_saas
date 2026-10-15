@@ -15,6 +15,8 @@ import { getKnowledgeSource, mergeModuleConfig, normalizeModuleConfig } from "./
 import {
   DEFAULT_BEHAVIOUR,
   END_CALL_TOOL,
+  KNOWLEDGE_BASE_SOURCE,
+  SEARCH_KNOWLEDGE_TOOL,
   defaultToolsFor,
   type PromptTemplateKey,
 } from "./agents.constants.js";
@@ -246,7 +248,16 @@ const agentsServiceImpl = {
       if (v !== undefined) (values as Record<string, unknown>)[k] = v;
     }
     if (behaviour) values.behaviour = { ...behaviourOf(before), ...behaviour };
-    if (enabledTools) values.enabledTools = withEndCall(enabledTools);
+    if (enabledTools) {
+      let tools = withEndCall(enabledTools);
+      // search_knowledge follows the agent's knowledge-base bindings (set via /knowledge-bases), not the tool list: a
+      // tool list saved by an editor that does not know about it must not switch it off while knowledge is bound.
+      const hasKnowledgeBase = (await agentsRepository.listBindings({ organizationId: ctx.organizationId, agentIds: [id] })).some(
+        (b) => b.sourceType === KNOWLEDGE_BASE_SOURCE,
+      );
+      if (hasKnowledgeBase && !tools.includes(SEARCH_KNOWLEDGE_TOOL) && isKnownToolName(SEARCH_KNOWLEDGE_TOOL)) tools = [...tools, SEARCH_KNOWLEDGE_TOOL];
+      values.enabledTools = tools;
+    }
     if (moduleConfig && Object.keys(moduleConfig).length > 0) {
       values.moduleConfig = mergeModuleConfig(before.moduleConfig, moduleConfig);
     }
@@ -327,7 +338,8 @@ const agentsServiceImpl = {
   },
 
   /**
-   * Replace-all knowledge bindings. Each source type belongs to a module: binding one requires that module to be
+   * Replace-all knowledge bindings (knowledge-base bindings are kept unless the request names at least one; they have
+   * their own endpoint). Each source type belongs to a module: binding one requires that module to be
    * enabled and the source to pass the module's own check (e.g. a Sales project must exist in the caller's
    * organization and project scope). An empty list is always allowed.
    */
@@ -340,12 +352,29 @@ const agentsServiceImpl = {
       const source = getKnowledgeSource(b.sourceType);
       if (!source) throw new ValidationError(`Unsupported knowledge source type "${b.sourceType}"`);
       if (!prepared.has(b.sourceType)) {
-        await modulesService.assertEnabled(ctx, source.moduleKey as ModuleKey);
+        // "core" sources (the knowledge base) belong to no optional module and are always available.
+        if (source.moduleKey !== "core") await modulesService.assertEnabled(ctx, source.moduleKey as ModuleKey);
         prepared.set(b.sourceType, await source.prepare?.(ctx));
       }
       await source.assertSource(ctx, b.sourceId, prepared.get(b.sourceType));
     }
-    const rows = await agentsRepository.replaceBindings({ organizationId: ctx.organizationId, agentId: id, bindings });
+    // Knowledge-base bindings are managed by PUT /api/agents/:id/knowledge-bases. A request that names none (e.g. the
+    // agent editor saving its project selection) keeps them instead of silently dropping them.
+    const keepKnowledgeBases = !bindings.some((b) => b.sourceType === KNOWLEDGE_BASE_SOURCE);
+    const kept = keepKnowledgeBases
+      ? (await agentsRepository.listBindings({ organizationId: ctx.organizationId, agentIds: [id] }))
+          .filter((b) => b.sourceType === KNOWLEDGE_BASE_SOURCE)
+          .map((b) => ({ sourceType: b.sourceType, sourceId: b.sourceId }))
+      : [];
+    const rows = await agentsRepository.replaceBindings({ organizationId: ctx.organizationId, agentId: id, bindings: [...bindings, ...kept] });
+    // An agent with a knowledge base gets the tool that searches it; without one, the tool is removed. (It is only
+    // ever offered on a call when the agent also has knowledge bound: see modules/knowledge/knowledge-core.ts.)
+    const hasKnowledgeBase = rows.some((r) => r.sourceType === KNOWLEDGE_BASE_SOURCE);
+    const tools = enabledToolsOf(agent);
+    if (hasKnowledgeBase !== tools.includes(SEARCH_KNOWLEDGE_TOOL) && isKnownToolName(SEARCH_KNOWLEDGE_TOOL)) {
+      const next = hasKnowledgeBase ? [...tools, SEARCH_KNOWLEDGE_TOOL] : tools.filter((t) => t !== SEARCH_KNOWLEDGE_TOOL);
+      await agentsRepository.update({ organizationId: ctx.organizationId, id, values: { enabledTools: next, updatedByUserId: userIdOf(ctx) } });
+    }
     await auditService.record(ctx, {
       action: "agent.knowledge_updated",
       entityType: "agent",
@@ -353,6 +382,67 @@ const agentsServiceImpl = {
       metadata: { name: agent.name, count: rows.length, sourceIds: rows.map((r) => r.sourceId) },
     });
     return present(ctx, (await agentsRepository.findById({ organizationId: ctx.organizationId, id })) ?? agent);
+  },
+
+  /**
+   * Copies an agent's whole configuration (prompt, voice, language, behaviour, tools, module settings and knowledge
+   * bindings) into a new ACTIVE, non-default agent named "<name> (copy)" (or "(copy 2)", ... when taken). Plan seat
+   * caps apply (migration 0020) exactly as for a new agent.
+   */
+  async duplicate(ctx: RequestContext, id: string) {
+    assertCan(ctx, "agents:manage");
+    const source = await loadOrThrow(ctx, id);
+    const userId = userIdOf(ctx);
+    const base = source.name.length > 110 ? source.name.slice(0, 110) : source.name;
+    let row: AgentRow | null = null;
+    for (let n = 1; n <= 20 && !row; n++) {
+      const name = n === 1 ? `${base} (copy)` : `${base} (copy ${n})`;
+      try {
+        row = await agentsRepository.create({
+          organizationId: ctx.organizationId,
+          values: {
+            name,
+            personaName: source.personaName,
+            companyName: source.companyName,
+            description: source.description,
+            status: "active",
+            isDefault: false,
+            promptTemplateKey: source.promptTemplateKey,
+            systemPrompt: source.systemPrompt,
+            extraInstructions: source.extraInstructions,
+            callObjective: source.callObjective,
+            greeting: source.greeting,
+            disclosureText: source.disclosureText,
+            language: source.language,
+            voice: source.voice,
+            tone: source.tone,
+            behaviour: source.behaviour,
+            enabledTools: enabledToolsOf(source),
+            moduleConfig: source.moduleConfig,
+            createdByUserId: userId,
+            updatedByUserId: userId,
+          },
+        });
+      } catch (err) {
+        if (!isUniqueViolation(err)) throw err; // name taken: try the next suffix
+      }
+    }
+    if (!row) throw new ConflictError("Could not find a free name for the copy; rename the existing copies first");
+    const bindings = await agentsRepository.listBindings({ organizationId: ctx.organizationId, agentIds: [source.id] });
+    if (bindings.length > 0) {
+      await agentsRepository.replaceBindings({
+        organizationId: ctx.organizationId,
+        agentId: row.id,
+        bindings: bindings.map((b) => ({ sourceType: b.sourceType, sourceId: b.sourceId })),
+      });
+    }
+    await auditService.record(ctx, {
+      action: "agent.duplicated",
+      entityType: "agent",
+      entityId: row.id,
+      metadata: { from: source.id, name: row.name },
+    });
+    return present(ctx, row);
   },
 };
 

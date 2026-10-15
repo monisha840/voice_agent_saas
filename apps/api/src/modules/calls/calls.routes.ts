@@ -13,6 +13,7 @@ import { requireContext } from "../../auth/auth.plugin.js";
 import { systemContext } from "../../auth/context.js";
 import { logger } from "../../shared/logger.js";
 import { lifecycle } from "../../runtime/lifecycle.js";
+import { dashboardTimeZone, fillDays, startOfDayWindow } from "../../shared/day-series.js";
 
 const listQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
@@ -20,7 +21,12 @@ const listQuery = z.object({
   status: z.enum(callStatusEnum.enumValues).optional(),
   agentId: z.string().uuid().optional(),
   callType: z.enum(callTypeEnum.enumValues).optional(),
+  from: z.string().max(40).refine((v) => !Number.isNaN(Date.parse(v)), "must be an ISO timestamp").optional(),
+  to: z.string().max(40).refine((v) => !Number.isNaN(Date.parse(v)), "must be an ISO timestamp").optional(),
+  outcome: z.enum(["answered", "unanswered"]).optional(),
 });
+
+const statsQuery = z.object({ days: z.coerce.number().int().min(1).max(90).default(30) });
 
 /** "test" runs a simulated call when no number is given; "outbound" needs a number or a lead. Inbound calls arrive via telephony, never from here. */
 const placeCallBody = z
@@ -36,8 +42,36 @@ export async function callsRoutes(app: FastifyInstance) {
   app.get("/api/calls", async (req, reply) => {
     const q = parseInput(listQuery, req.query);
     return reply.send(
-      await callsService.listCalls(requireContext(req), { ...q, before: q.before ? new Date(q.before) : undefined }),
+      await callsService.listCalls(requireContext(req), {
+        ...q,
+        before: q.before ? new Date(q.before) : undefined,
+        from: q.from ? new Date(q.from) : undefined,
+        to: q.to ? new Date(q.to) : undefined,
+      }),
     );
+  });
+
+  /** Overview aggregates (totals, connected, live, per-day series) over the calls this viewer may list. */
+  app.get("/api/calls/stats", async (req, reply) => {
+    const { days } = parseInput(statsQuery, req.query);
+    const timeZone = dashboardTimeZone();
+    const now = new Date();
+    const from = startOfDayWindow(now, days, timeZone);
+    const stats = await callsService.callStats(requireContext(req), { from, timeZone });
+    return reply.send({
+      data: {
+        days,
+        from: from.toISOString(),
+        timeZone,
+        total: stats.total,
+        answered: stats.answered,
+        completed: stats.completed,
+        failed: stats.failed,
+        active: stats.active,
+        talkSeconds: stats.talkSeconds,
+        daily: fillDays(stats.daily, from, days, timeZone, { total: 0, answered: 0 }),
+      },
+    });
   });
 
   app.post("/api/calls", { preHandler: callRateLimitPreHandler }, async (req, reply) => {

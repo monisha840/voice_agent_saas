@@ -18,6 +18,11 @@ const listQuery = z.object({
   status: z.enum(leadStatusEnum.enumValues).optional(),
   projectId: z.string().uuid().optional(),
   assignedTo: z.string().uuid().optional(),
+  /** Name or phone digits. */
+  q: z.string().trim().max(100).optional(),
+  /** Paging is opt-in: without `limit` the full scoped list is returned, as before. */
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  offset: z.coerce.number().int().min(0).max(100_000).default(0),
 });
 const assignBody = z.object({ userId: z.string().uuid().nullable() });
 // Optional: call this lead with a specific agent (default: the agent bound to the lead's project, else the org default).
@@ -25,8 +30,13 @@ const callBody = z.object({ agentId: z.string().uuid().optional() }).strict().op
 
 export async function leadsRoutes(app: FastifyInstance) {
   app.get("/api/leads", async (req, reply) => {
-    const data = await leadsService.listLeads(requireContext(req), parseInput(listQuery, req.query));
-    return reply.send({ data });
+    const { q, limit, offset, ...filters } = parseInput(listQuery, req.query);
+    if (limit === undefined && !q) {
+      const data = await leadsService.listLeads(requireContext(req), filters);
+      return reply.send({ data, total: data.length });
+    }
+    const page = await leadsService.listLeadsPage(requireContext(req), { ...filters, search: q, limit: limit ?? 25, offset });
+    return reply.send({ ...page, limit: limit ?? 25, offset });
   });
 
   app.post("/api/leads", async (req, reply) => {

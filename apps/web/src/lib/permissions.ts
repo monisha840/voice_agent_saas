@@ -22,7 +22,9 @@ export type Action =
   | "agent-config:manage"
   | "audit:read"
   | "usage:read"
-  | "calls:read";
+  | "calls:read"
+  | "leads:read"
+  | "site-visits:manage";
 
 const RANK: Record<Role, number> = { AGENT: 0, MANAGER: 1, ADMIN: 2, OWNER: 3 };
 
@@ -45,6 +47,8 @@ const MIN_ROLE: Record<Action, Role> = {
   "audit:read": "ADMIN",
   "usage:read": "ADMIN",
   "calls:read": "AGENT", // agents only see calls on their own leads (API enforces scope)
+  "leads:read": "AGENT", // agents: only leads assigned to them (API enforces scope)
+  "site-visits:manage": "AGENT", // within the leads the user may see (API enforces scope)
 };
 
 export function can(role: Role | null | undefined, action: Action): boolean {

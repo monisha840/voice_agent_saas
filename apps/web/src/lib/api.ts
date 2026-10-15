@@ -6,6 +6,11 @@ import type {
   CallDetail,
   CallType,
   SiteVisitRow,
+  SiteVisit,
+  SiteVisitDetail,
+  SiteVisitView,
+  CallStats,
+  SalesOverview,
   ToolInfo,
   AgentConfig,
   AgentConfigResponse,
@@ -174,6 +179,28 @@ export function createApi(getExtraHeaders: HeaderProvider = () => ({})) {
     createWebCall: (input: { agentId?: string; leadId?: string }) =>
       send<{ callId: string; agentId: string; sampleRate: number }>("POST", "/api/calls/web", input),
     listSiteVisits: () => request<SiteVisitRow[]>("/api/site-visits"),
+    /** One page of site visits with lead/project names (scoped by role on the server). */
+    listSiteVisitsPage: async (opts: { view: SiteVisitView; limit?: number; offset?: number; leadId?: string }) => {
+      const body = await raw(`/api/site-visits${qs({ view: opts.view, limit: opts.limit, offset: opts.offset, leadId: opts.leadId })}`);
+      return { data: (body.data ?? []) as SiteVisitDetail[], total: (body.total ?? 0) as number };
+    },
+    /** Books a visit for a lead; the project is always the lead's own (decided by the server). */
+    bookSiteVisit: (leadId: string, scheduledAt: string) =>
+      send<SiteVisit>("POST", "/api/site-visits", { leadId, scheduledAt }),
+    rescheduleSiteVisit: (id: string, scheduledAt: string) =>
+      send<SiteVisit>("POST", `/api/site-visits/${id}/reschedule`, { scheduledAt }),
+    cancelSiteVisit: (id: string) => send<SiteVisit>("POST", `/api/site-visits/${id}/cancel`),
+    /** Overview: call totals and per-day series over the calls this user may see. */
+    callStats: (days = 30) => request<CallStats>(`/api/calls/stats${qs({ days })}`),
+    /** Overview (Sales module): lead totals and outcomes, newest leads, upcoming visits. */
+    salesOverview: (days = 30) => request<SalesOverview>(`/api/sales/overview${qs({ days })}`),
+    /** Paged lead list with search (name or phone digits) and filters. */
+    listLeadsPage: async (opts: { q?: string; status?: string; projectId?: string; limit?: number; offset?: number }) => {
+      const body = await raw(
+        `/api/leads${qs({ q: opts.q, status: opts.status, projectId: opts.projectId, limit: opts.limit ?? 25, offset: opts.offset })}`,
+      );
+      return { data: (body.data ?? []) as Lead[], total: (body.total ?? 0) as number };
+    },
     /** Plays a short sample in a voice. A voice name the provider does not know is an error (no silent fallback). */
     previewVoice: (voice: string, language?: string) =>
       send<{ voice: string; languageCode: string; audioBase64: string; format: string }>("POST", "/api/agents/voice-preview", { voice, ...(language ? { language } : {}) }),
@@ -209,6 +236,9 @@ export function createApi(getExtraHeaders: HeaderProvider = () => ({})) {
         status?: CallStatus | "";
         agentId?: string;
         callType?: CallType | "";
+        from?: string;
+        to?: string;
+        outcome?: "answered" | "unanswered" | "";
       } = {},
     ) => {
       const body = await raw(
@@ -218,6 +248,9 @@ export function createApi(getExtraHeaders: HeaderProvider = () => ({})) {
           status: opts.status,
           agentId: opts.agentId,
           callType: opts.callType,
+          from: opts.from,
+          to: opts.to,
+          outcome: opts.outcome,
         })}`,
       );
       return { data: (body.data ?? []) as CallListItem[], nextBefore: (body.nextBefore ?? null) as string | null };

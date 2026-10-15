@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Lock, Plus, Trash2 } from "lucide-react";
@@ -224,6 +225,16 @@ export function AgentEditor({
               {agent.status === "archived" && <Badge tone="warn">Archived</Badge>}
               <span className="text-sm text-stone-500">as {agent.personaName}</span>
             </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {agent.status === "active" && (
+              <Link
+                href={`/test?agentId=${agent.id}`}
+                className="inline-flex items-center justify-center rounded-md border border-stone-300 bg-white px-3 py-2 text-sm font-medium text-stone-700 hover:bg-stone-100"
+              >
+                Test this agent
+              </Link>
+            )}
           </div>
           {canManage && (
             <div className="flex flex-wrap gap-2">

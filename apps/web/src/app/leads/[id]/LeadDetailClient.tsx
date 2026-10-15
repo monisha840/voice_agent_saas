@@ -25,6 +25,7 @@ import { can } from "@/lib/permissions";
 import { Button, errorMessage } from "@/components/ui";
 import { LeadFormModal } from "@/components/LeadForm";
 import { FollowUpList } from "@/components/FollowUpList";
+import { LeadVisitsPanel } from "@/components/SiteVisits";
 import type { LeadDetail, Project, Role, TeamMember } from "@/lib/types";
 
 export function LeadDetailClient({
@@ -46,7 +47,6 @@ export function LeadDetailClient({
   const latestCall = lead.callHistory[0] ?? null;
   const conversation = lead.latestConversation;
   const qualification = conversation?.qualification ?? null;
-  const latestVisit = lead.siteVisits[0] ?? null;
   const callJustCompleted = latestCall?.status === "completed" && conversation?.summary;
 
   return (
@@ -174,13 +174,19 @@ export function LeadDetailClient({
             </SectionShell>
 
             <SectionShell title="Project" icon={Building2}>
-              <div className="text-sm font-medium text-stone-900">
-                {project?.name ?? "Green Valley Residency"}
-              </div>
-              <div className="mt-1 flex items-center gap-1 text-sm text-stone-500">
-                <MapPin size={13} />
-                {project?.location ?? "Whitefield, Bangalore"}
-              </div>
+              {project ? (
+                <>
+                  <Link href={`/projects/${project.id}`} className="text-sm font-medium text-stone-900 hover:text-emerald-800">
+                    {project.name}
+                  </Link>
+                  <div className="mt-1 flex items-center gap-1 text-sm text-stone-500">
+                    <MapPin size={13} />
+                    {project.location}
+                  </div>
+                </>
+              ) : (
+                <p className="text-sm text-stone-500">Project details are not available to your role.</p>
+              )}
             </SectionShell>
 
             {can(role, "leads:assign") && (
@@ -189,19 +195,18 @@ export function LeadDetailClient({
               </SectionShell>
             )}
 
-            <SectionShell title="Site Visit" icon={Calendar}>
-              {latestVisit ? (
-                <div>
-                  <div className="text-lg font-semibold text-stone-900">
-                    {formatDateTime(latestVisit.scheduledAt)}
-                  </div>
-                  <div className="mt-2">
-                    <StatusBadge status={latestVisit.status === "booked" ? "CONFIRMED" : "CANCELLED"} />
-                  </div>
-                </div>
-              ) : (
-                <p className="text-sm text-stone-500">No site visit booked</p>
-              )}
+            <SectionShell title="Site Visits" icon={Calendar}>
+              <LeadVisitsPanel
+                leadId={lead.id}
+                leadName={lead.name}
+                visits={lead.siteVisits}
+                canManage={can(role, "site-visits:manage")}
+                onChanged={() => {
+                  // Booking moves the lead to VISIT_BOOKED on the server: reload the lead so both stay in step.
+                  void api.getLead(lead.id).then(setLead).catch(() => undefined);
+                  router.refresh();
+                }}
+              />
             </SectionShell>
 
             {lead.followUps.length > 0 && (
@@ -365,15 +370,19 @@ function CallHistoryCard({ calls }: { calls: LeadDetail["callHistory"] }) {
       ) : (
         <ul className="divide-y divide-stone-100">
           {calls.map((call) => (
-            <li key={call.id} className="flex items-center justify-between py-2.5 text-sm">
-              <div>
-                <div className="font-medium text-stone-800">AI Outbound Call</div>
-                <div className="text-xs text-stone-400">{formatDateTime(call.createdAt)}</div>
-              </div>
-              <div className="flex items-center gap-3">
-                <span className="text-stone-500">{formatDuration(call.startedAt, call.endedAt)}</span>
-                <StatusBadge status={call.status.toUpperCase()} />
-              </div>
+            <li key={call.id}>
+              <Link href={`/calls/${call.id}`} className="flex items-center justify-between gap-3 py-2.5 text-sm hover:bg-stone-50">
+                <div>
+                  <div className="font-medium text-stone-800">
+                    {call.callType === "inbound" ? "Inbound call" : call.callType === "test" ? "Test call" : "Outbound call"}
+                  </div>
+                  <div className="text-xs text-stone-400">{formatDateTime(call.createdAt)}</div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-stone-500">{formatDuration(call.startedAt, call.endedAt)}</span>
+                  <StatusBadge status={call.status.toUpperCase()} />
+                </div>
+              </Link>
             </li>
           ))}
         </ul>

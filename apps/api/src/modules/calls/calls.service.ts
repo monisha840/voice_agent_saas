@@ -14,7 +14,7 @@ import { generateCallSummary, legacyDefaultSummaryProfile, type SummaryProfile }
 import { getPromptTemplate } from "../ai-agent/persona.js";
 import { logger } from "../../shared/logger.js";
 import { usageService } from "../usage/usage.service.js";
-import { NotFoundError, ValidationError } from "../../shared/errors.js";
+import { LimitExceededError, NotFoundError, ServiceUnavailableError, ValidationError } from "../../shared/errors.js";
 import { normalizeDialedNumber, normalizeIndianMobile } from "../../shared/phone.js";
 import { callLimits } from "./call-limits.js";
 import { systemContext, type RequestContext } from "../../auth/context.js";
@@ -114,7 +114,16 @@ const callsServiceImpl = {
   /** Newest-first page of the caller's calls (core Voice AI view: no lead or module data required). */
   async listCalls(
     ctx: RequestContext,
-    params: { limit: number; before?: Date; status?: CallStatusValue; agentId?: string; callType?: CallType },
+    params: {
+      limit: number;
+      before?: Date;
+      status?: CallStatusValue;
+      agentId?: string;
+      callType?: CallType;
+      from?: Date;
+      to?: Date;
+      outcome?: "answered" | "unanswered";
+    },
   ) {
     assertCan(ctx, "calls:read");
     const rows = await callsRepository.list({
@@ -124,6 +133,9 @@ const callsServiceImpl = {
       agentId: params.agentId,
       callType: params.callType,
       before: params.before,
+      from: params.from,
+      to: params.to,
+      outcome: params.outcome,
       limit: params.limit + 1,
     });
     const page = rows.slice(0, params.limit);
@@ -131,6 +143,17 @@ const callsServiceImpl = {
     const extra = await callHooks.enrichListedCalls(ctx, page);
     const data = page.map((row) => ({ ...row, ...extra.get(row.id) }));
     return { data, nextBefore: rows.length > params.limit ? data[data.length - 1].createdAt.toISOString() : null };
+  },
+
+  /** Dashboard aggregates over exactly the calls this viewer may list (same visibility rule as listCalls). */
+  async callStats(ctx: RequestContext, params: { from: Date; timeZone: string }) {
+    assertCan(ctx, "calls:read");
+    return callsRepository.stats({
+      organizationId: ctx.organizationId,
+      visibility: await callVisibilityFor(ctx),
+      from: params.from,
+      timeZone: params.timeZone,
+    });
   },
 
   /** Creates the call record (and its empty conversation). The agent must be an active agent of this organization. */
@@ -243,8 +266,21 @@ const callsServiceImpl = {
     if (!route) throw new NotFoundError(`No agent answers ${params.dialedNumber}`);
     // From here on everything belongs to the organization that owns the dialed number (a verified database record).
     return runInTenant({ organizationId: route.organizationId }, async () => {
+    // Refused attempts are recorded on the number (number management shows them); a retried webhook for the same
+    // provider call is counted once. Recording is best effort and never changes the answer given to the provider.
+    const refuse = (reason: string) =>
+      agentPhoneNumbersRepository
+        .recordInboundRefused({ organizationId: route.organizationId, id: route.id, reason, providerCallId: params.providerCallId })
+        .catch((err: unknown) => logger.warn("inbound: could not record refused attempt", { error: err instanceof Error ? err.message : String(err) }));
+    if (!route.routingEnabled) {
+      await refuse("paused");
+      throw new NotFoundError(`No agent answers ${params.dialedNumber} (routing paused)`);
+    }
     const agent = await agentsRepository.findById({ organizationId: route.organizationId, id: route.agentId });
-    if (!agent || agent.status !== "active") throw new NotFoundError(`No active agent answers ${params.dialedNumber}`);
+    if (!agent || agent.status !== "active") {
+      await refuse("agent_inactive");
+      throw new NotFoundError(`No active agent answers ${params.dialedNumber}`);
+    }
 
     const ctx = systemContext(route.organizationId, "telephony-inbound");
     let caller: string | null = null;
@@ -267,8 +303,10 @@ const callsServiceImpl = {
         status: "ringing",
         providerCallId: params.providerCallId ?? null,
         counterpartyNumber: caller,
+        lineNumber: dialed,
       });
     } catch (err) {
+      if (err instanceof LimitExceededError || err instanceof ServiceUnavailableError) await refuse(err.code);
       // Lost a race with the other announcement of the same provider call: use the record that won.
       if (params.providerCallId && isUniqueViolation(err)) {
         const winner = await callsRepository.findByProviderCallIdAnyOrg({ providerCallId: params.providerCallId });
@@ -277,6 +315,9 @@ const callsServiceImpl = {
       throw err;
     }
     await conversationsRepository.createForCall({ organizationId: route.organizationId, callId: call.id });
+    await agentPhoneNumbersRepository
+      .recordInboundAccepted({ organizationId: route.organizationId, id: route.id })
+      .catch((err: unknown) => logger.warn("inbound: could not record accepted call", { error: err instanceof Error ? err.message : String(err) }));
     await auditService.record(ctx, {
       action: "call.received",
       entityType: "call",

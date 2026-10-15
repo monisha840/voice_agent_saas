@@ -30,9 +30,12 @@ import type {
   InitiateCallParams,
   InitiateCallResult,
   ParsedStatusCallback,
+  ProviderNumberCheck,
+  ProviderSetupStatus,
   TelephonyStatusCallbackPayload,
 } from "./telephony.interface.js";
 import { getConfig } from "../../config/env.js";
+import { normalizeDialedNumber } from "../../shared/phone.js";
 import { issueStreamToken } from "../../security/stream-token.js";
 import { ProviderConfigError, ProviderRequestError } from "../../shared/errors.js";
 import { logger, redact } from "../../shared/logger.js";
@@ -52,9 +55,9 @@ const EXOTEL_STATUS_MAP: Record<string, ParsedStatusCallback["status"]> = {
 export class ExotelProvider implements ITelephonyProvider {
   readonly name = "exotel";
 
-  private assertConfigured() {
+  private missingSettings(): string[] {
     const { exotel } = getConfig();
-    const missing = (
+    return (
       [
         ["EXOTEL_API_KEY", exotel.apiKey],
         ["EXOTEL_API_TOKEN", exotel.apiToken],
@@ -67,7 +70,11 @@ export class ExotelProvider implements ITelephonyProvider {
     )
       .filter(([, value]) => !value)
       .map(([key]) => key);
+  }
 
+  private assertConfigured() {
+    const { exotel } = getConfig();
+    const missing = this.missingSettings();
     if (missing.length > 0) {
       throw new ProviderConfigError(
         "exotel",
@@ -181,6 +188,110 @@ export class ExotelProvider implements ITelephonyProvider {
     return { providerCallId: callSid, status: "initiating" };
   }
 
+  describeSetup(): ProviderSetupStatus {
+    const { exotel } = getConfig();
+    const missing = this.missingSettings();
+    const problems: string[] = [];
+    if (exotel.webhookBaseUrl && !/^https:\/\//i.test(exotel.webhookBaseUrl)) {
+      problems.push("The public webhook address must use https:// (Exotel connects to a wss:// address derived from it).");
+    }
+    return {
+      provider: this.name,
+      simulated: false,
+      configured: missing.length === 0 && problems.length === 0,
+      missing,
+      problems,
+      numberCheckSupported: true,
+    };
+  }
+
+  /**
+   * Looks the number up in the account's ExoPhone list (documented ExoPhones API, v2_beta):
+   *   GET https://{subdomain}/v2_beta/Accounts/{account_sid}/IncomingPhoneNumbers  -> { incoming_phone_numbers: [...] }
+   * https://developer.exotel.com/docs/exophones/api-reference/list-numbers
+   * Read-only. Only the matching entry's capability and destination flags are reported back: the list holds every
+   * number of the platform's Exotel account (other organizations' numbers too) and is never returned or logged.
+   * The page/page_size fields are documented but not how to request further pages, so only the first page is read and
+   * a miss on a full page is reported as inconclusive.
+   */
+  async checkNumber(phoneNumber: string): Promise<ProviderNumberCheck> {
+    const { exotel } = getConfig();
+    const missing = (
+      [
+        ["EXOTEL_API_KEY", exotel.apiKey],
+        ["EXOTEL_API_TOKEN", exotel.apiToken],
+        ["EXOTEL_ACCOUNT_SID", exotel.accountSid],
+        ["EXOTEL_SUBDOMAIN", exotel.subdomain],
+      ] as const
+    ).filter(([, v]) => !v);
+    if (missing.length > 0) {
+      return { status: "error", detail: "The platform's Exotel API credentials are not configured. Contact support.", retryable: false };
+    }
+    const url = `https://${exotel.subdomain}/v2_beta/Accounts/${encodeURIComponent(exotel.accountSid)}/IncomingPhoneNumbers`;
+    const auth = Buffer.from(`${exotel.apiKey}:${exotel.apiToken}`).toString("base64");
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: "GET",
+        headers: { Authorization: `Basic ${auth}`, Accept: "application/json" },
+        signal: AbortSignal.timeout(NUMBER_CHECK_TIMEOUT_MS),
+      });
+    } catch (err) {
+      const timedOut = err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
+      logger.warn("exotel.checkNumber: request failed", { timedOut });
+      return {
+        status: "error",
+        detail: timedOut ? "Exotel did not answer within 10 seconds. Try again shortly." : "Exotel could not be reached. Try again shortly.",
+        retryable: true,
+      };
+    }
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      logger.warn("exotel.checkNumber: provider refused", { status: response.status });
+      if (response.status === 401 || response.status === 403) {
+        return { status: "error", detail: `Exotel refused the platform's API credentials (HTTP ${response.status}). Contact support.`, retryable: false };
+      }
+      if (response.status === 429) return { status: "error", detail: "Exotel is rate-limiting requests. Try again in a minute.", retryable: true };
+      if (response.status >= 500) return { status: "error", detail: `Exotel had an internal error (HTTP ${response.status}). Try again shortly.`, retryable: true };
+      return { status: "error", detail: `Exotel rejected the number lookup (HTTP ${response.status}). Contact support.`, retryable: false };
+    }
+    let entries: Array<Record<string, unknown>>;
+    let pageSize: number | null = null;
+    try {
+      const json = (await response.json()) as Record<string, unknown>;
+      const list = json.incoming_phone_numbers;
+      if (!Array.isArray(list)) throw new Error("no incoming_phone_numbers array");
+      entries = list.filter((e): e is Record<string, unknown> => typeof e === "object" && e !== null);
+      pageSize = typeof json.page_size === "number" ? json.page_size : null;
+    } catch {
+      return { status: "error", detail: "Exotel returned a response this version does not understand. Contact support.", retryable: false };
+    }
+    const match = entries.find((e) => sameNumber(e.phone_number, phoneNumber) || sameNumber(e.friendly_name, phoneNumber));
+    if (!match) {
+      const fullPage = pageSize !== null && entries.length >= pageSize;
+      return {
+        status: "not_found",
+        detail: fullPage
+          ? `Not found in the first ${entries.length} numbers of the Exotel account (the list continues on further pages, which this check cannot read). Contact support to confirm.`
+          : "This number is not on the platform's Exotel account. Calls to it cannot reach your agent until support adds it.",
+        retryable: false,
+      };
+    }
+    const capabilities = (match.capabilities ?? {}) as Record<string, unknown>;
+    const voiceCapable = capabilities.voice !== false;
+    const voiceDestinationSet = typeof match.voice_url === "string" && match.voice_url.length > 0;
+    return {
+      status: "verified",
+      detail: !voiceCapable
+        ? "The number is on the Exotel account but is not enabled for voice."
+        : voiceDestinationSet
+          ? "The number is on the Exotel account and has an incoming-call flow set."
+          : "The number is on the Exotel account but no incoming-call flow is set, so calls will not reach your agent. Contact support.",
+      voiceCapable,
+      voiceDestinationSet,
+    };
+  }
+
   /**
    * Parses Exotel's StatusCallback (form-encoded or JSON). With
    * StatusCallbackEvents the payload carries an `EventType`
@@ -213,6 +324,18 @@ export class ExotelProvider implements ITelephonyProvider {
     const durationSeconds = duration !== undefined && duration !== "" ? Number(duration) : undefined;
     const recordingUrl = payload.RecordingUrl ? String(payload.RecordingUrl) : undefined;
     return { providerCallId: callSid, status, durationSeconds, recordingUrl };
+  }
+}
+
+const NUMBER_CHECK_TIMEOUT_MS = 10_000;
+
+/** Exotel lists numbers in E.164 (`phone_number`) and national form (`friendly_name`); compare normalized. */
+function sameNumber(value: unknown, e164: string): boolean {
+  if (typeof value !== "string" || !value.trim()) return false;
+  try {
+    return normalizeDialedNumber(value) === e164;
+  } catch {
+    return false;
   }
 }
 

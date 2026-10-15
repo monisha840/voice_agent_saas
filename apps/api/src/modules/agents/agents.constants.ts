@@ -11,6 +11,10 @@ export type AgentStatus = (typeof AGENT_STATUSES)[number];
 /** The only tool every agent has: it can always hang up. */
 export const END_CALL_TOOL = "end_call";
 
+/** The core knowledge-base source type and the tool that searches it (modules/knowledge). */
+export const KNOWLEDGE_BASE_SOURCE = "knowledge_base";
+export const SEARCH_KNOWLEDGE_TOOL = "search_knowledge";
+
 /** Tools of the 'generic' template. */
 export const GENERIC_TOOL_NAMES: readonly string[] = [END_CALL_TOOL];
 

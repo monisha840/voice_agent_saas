@@ -8,7 +8,8 @@ import { TestCallClient } from "./TestCallClient";
  * Run a call against an agent. Works without the Sales module: a simulated call needs no phone number,
  * and a phone-number test needs no lead. Leads are offered as a target only when Sales is enabled.
  */
-export default async function TestPage() {
+export default async function TestPage({ searchParams }: { searchParams: Promise<{ agentId?: string }> }) {
+  const { agentId: requestedAgentId } = await searchParams;
   try {
     const me = await api.me();
     const sales = hasModule(me.organization, "sales");
@@ -19,7 +20,12 @@ export default async function TestPage() {
     ]);
     return (
       <PageShell title="Test" subtitle="Run a call against an agent and watch it live.">
-        <TestCallClient agents={agents.filter((a) => a.status === "active")} leads={leads} sales={sales} />
+        <TestCallClient
+          agents={agents.filter((a) => a.status === "active")}
+          leads={leads}
+          sales={sales}
+          initialAgentId={requestedAgentId}
+        />
       </PageShell>
     );
   } catch (err) {

@@ -189,7 +189,10 @@ describe("billing migrations", () => {
     const from = journal.entries.find((e) => e.tag === "0019_billing_foundation")!.when;
     await admin`delete from drizzle.__drizzle_migrations where created_at >= ${from}`;
     await admin.unsafe("drop table if exists stream_grants"); // a later, unrelated migration is re-applied too
-    await migrate(drizzle(admin), { migrationsFolder: MIGRATIONS });
+    // Re-apply the billing migrations and everything up to 0022 only; later migrations (0023+) are unrelated to billing.
+    const upTo0022 = partialMigrations("0022_billing_grants_hardening");
+    await migrate(drizzle(admin), { migrationsFolder: upTo0022 });
+    rmSync(upTo0022, { recursive: true, force: true });
     expect((await admin`select count(*)::int n from plans`)[0].n).toBe(5);
   });
 });
@@ -234,7 +237,10 @@ describe("upgrade from 0021 with billing data applies only 0022 and leaves the d
          union all select 'e:' || row_to_json(e)::text from billing_events e) x`)[0].d as string;
     const dataBefore = await digest();
 
-    await migrate(drizzle(admin), { migrationsFolder: MIGRATIONS });
+    // Exactly the 0021 -> 0022 step (later migrations, e.g. 0023 knowledge base, are covered by their own tests).
+    const to0022 = partialMigrations("0022_billing_grants_hardening");
+    await migrate(drizzle(admin), { migrationsFolder: to0022 });
+    rmSync(to0022, { recursive: true, force: true });
 
     expect((await admin`select count(*)::int n from drizzle.__drizzle_migrations`)[0].n).toBe(before + 1);
     expect(await digest()).toBe(dataBefore);

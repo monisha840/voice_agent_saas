@@ -8,5 +8,6 @@ import { leadsRoutes } from "../leads/leads.routes.js";
 import { projectsRoutes } from "../projects/projects.routes.js";
 import { siteVisitsRoutes } from "../site-visits/site-visits.routes.js";
 import { followUpsRoutes } from "../follow-ups/follow-ups.routes.js";
+import { salesOverviewRoutes } from "./sales-overview.routes.js";
 
-export const salesRoutes: ReadonlyArray<(app: FastifyInstance) => Promise<void>> = [projectsRoutes, leadsRoutes, siteVisitsRoutes, followUpsRoutes];
+export const salesRoutes: ReadonlyArray<(app: FastifyInstance) => Promise<void>> = [projectsRoutes, leadsRoutes, siteVisitsRoutes, followUpsRoutes, salesOverviewRoutes];

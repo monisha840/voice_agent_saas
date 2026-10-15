@@ -1,4 +1,4 @@
-import { and, eq, desc, gte, inArray, isNull, lt, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, eq, desc, gte, inArray, isNotNull, isNull, lt, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { db } from "../client.js";
 import { systemLookups } from "../system-lookups.js";
 import { runInTenant } from "../tenant-context.js";
@@ -33,6 +33,8 @@ export interface NewCallParams {
   providerCallId?: string | null;
   counterpartyNumber?: string | null;
   counterpartyName?: string | null;
+  /** Our number the call arrived on (inbound). */
+  lineNumber?: string | null;
   initiatedByUserId?: string | null;
 }
 
@@ -46,6 +48,7 @@ function newCallValues(params: NewCallParams) {
     providerCallId: params.providerCallId ?? null,
     counterpartyNumber: params.counterpartyNumber ?? null,
     counterpartyName: params.counterpartyName ?? null,
+    lineNumber: params.lineNumber ?? null,
     initiatedByUserId: params.initiatedByUserId ?? null,
   };
 }
@@ -114,6 +117,12 @@ export const callsRepository = {
     agentId?: string;
     callType?: CallType;
     before?: Date;
+    /** Created at or after this instant. */
+    from?: Date;
+    /** Created strictly before this instant. */
+    to?: Date;
+    /** answered = the call connected (it has a start time); unanswered = it never did. */
+    outcome?: "answered" | "unanswered";
     limit: number;
   }) {
     return db
@@ -142,10 +151,41 @@ export const callsRepository = {
           params.agentId ? eq(calls.agentId, params.agentId) : undefined,
           params.callType ? eq(calls.callType, params.callType) : undefined,
           params.before ? lt(calls.createdAt, params.before) : undefined,
+          params.from ? gte(calls.createdAt, params.from) : undefined,
+          params.to ? lt(calls.createdAt, params.to) : undefined,
+          params.outcome === "answered" ? isNotNull(calls.startedAt) : undefined,
+          params.outcome === "unanswered" ? isNull(calls.startedAt) : undefined,
         ),
       )
       .orderBy(desc(calls.createdAt), desc(calls.id))
       .limit(params.limit);
+  },
+
+  /**
+   * Dashboard aggregates over the calls the viewer may see, created at or after `from`: totals, how many connected,
+   * how many are still live, and a per-day count (days in `timeZone`). Two grouped queries, no per-row work.
+   */
+  async stats(params: { organizationId: string; visibility?: CallVisibilityCondition; from: Date; timeZone: string }) {
+    const where = and(eq(calls.organizationId, params.organizationId), params.visibility, gte(calls.createdAt, params.from));
+    const [totals] = await db
+      .select({
+        total: sql<number>`count(*)::int`,
+        answered: sql<number>`count(${calls.startedAt})::int`,
+        completed: sql<number>`count(*) filter (where ${calls.status} = 'completed')::int`,
+        failed: sql<number>`count(*) filter (where ${calls.status} = 'failed')::int`,
+        active: sql<number>`count(*) filter (where ${calls.status} in ('initiating', 'ringing', 'in_progress'))::int`,
+        talkSeconds: sql<number>`coalesce(sum(extract(epoch from (${calls.endedAt} - ${calls.startedAt}))) filter (where ${calls.endedAt} is not null and ${calls.startedAt} is not null), 0)::int`,
+      })
+      .from(calls)
+      .where(where);
+    const day = sql<string>`to_char(${calls.createdAt} at time zone ${params.timeZone}, 'YYYY-MM-DD')`;
+    const daily = await db
+      .select({ day, total: sql<number>`count(*)::int`, answered: sql<number>`count(${calls.startedAt})::int` })
+      .from(calls)
+      .where(where)
+      .groupBy(sql`1`) // positional: a repeated time-zone parameter would not match the select expression
+      .orderBy(sql`1`);
+    return { ...totals, daily };
   },
 
   async listByLead(params: { organizationId: string; leadId: string }) {

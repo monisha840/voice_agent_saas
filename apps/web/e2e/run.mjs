@@ -11,7 +11,7 @@
 // (DATABASE_MIGRATION_URL there would otherwise redirect migrations to a developer database).
 // Creates/drops only database voice_agent_ui_test and role voice_app_uitest. Never touches any other database.
 import { spawn, spawnSync } from "node:child_process";
-import { cpSync, createWriteStream, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { closeSync, cpSync, mkdirSync, mkdtempSync, openSync, rmSync, symlinkSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -44,10 +44,11 @@ const children = new Set();
 let webCopy = null;
 
 function start(cmd, args, opts, logFile) {
-  const out = createWriteStream(join(logDir, logFile));
-  const child = spawn(cmd, args, { ...opts, stdio: ["ignore", "pipe", "pipe"], detached: !isWin });
-  child.stdout.pipe(out);
-  child.stderr.pipe(out);
+  // Straight to the log file, not a pipe: Playwright runs via spawnSync, which blocks this process's event loop, so a
+  // pipe would never be drained and a server whose output filled it (~64 KB on Windows) would freeze mid-suite.
+  const fd = openSync(join(logDir, logFile), "a");
+  const child = spawn(cmd, args, { ...opts, stdio: ["ignore", fd, fd], detached: !isWin });
+  closeSync(fd);
   children.add(child);
   child.on("exit", () => children.delete(child));
   return child;

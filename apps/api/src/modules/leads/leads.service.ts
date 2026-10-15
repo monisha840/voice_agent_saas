@@ -90,6 +90,20 @@ const leadsServiceImpl = {
     return leadsRepository.list({ organizationId: ctx.organizationId, scope: await leadScopeFor(ctx), ...filters });
   },
 
+  /** One page of leads in scope (newest first) plus the total matching count, for paged lists with search. */
+  async listLeadsPage(ctx: RequestContext, params: LeadFilters & { search?: string; limit: number; offset: number }) {
+    assertCan(ctx, "leads:read");
+    const base = { organizationId: ctx.organizationId, scope: await leadScopeFor(ctx), ...params };
+    const [data, total] = await Promise.all([leadsRepository.list(base), leadsRepository.count(base)]);
+    return { data, total };
+  },
+
+  /** Dashboard aggregates over the leads in scope. */
+  async leadStats(ctx: RequestContext, params: { from: Date; timeZone: string }) {
+    assertCan(ctx, "leads:read");
+    return leadsRepository.stats({ organizationId: ctx.organizationId, scope: await leadScopeFor(ctx), ...params });
+  },
+
   async createLead(ctx: RequestContext, input: CreateLeadInput) {
     assertCan(ctx, "leads:create");
     const data = parseInput(createSchema, input);

@@ -18,6 +18,8 @@ import type {
   InitiateCallParams,
   InitiateCallResult,
   ParsedStatusCallback,
+  ProviderNumberCheck,
+  ProviderSetupStatus,
   TelephonyStatusCallbackPayload,
 } from "./telephony.interface.js";
 
@@ -66,6 +68,18 @@ export class MockTelephonyProvider implements ITelephonyProvider {
     return {
       providerCallId: `mock-call-${params.internalCallId}`,
       status: "initiating",
+    };
+  }
+
+  describeSetup(): ProviderSetupStatus {
+    return { provider: this.name, simulated: true, configured: true, missing: [], problems: [], numberCheckSupported: false };
+  }
+
+  /** There is no provider account behind the development provider, so nothing can be confirmed (never "verified"). */
+  async checkNumber(): Promise<ProviderNumberCheck> {
+    return {
+      status: "unsupported",
+      detail: "This environment uses the simulated telephony provider: no real calls arrive, so the number cannot be checked with a provider.",
     };
   }
 

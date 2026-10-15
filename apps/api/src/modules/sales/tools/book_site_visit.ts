@@ -2,7 +2,7 @@ import type { AiTool } from "../../../ai-tools/types.js";
 import { salesSubject } from "./sales-subject.js";
 import { toolContext } from "../../../ai-tools/tool-context.js";
 import { siteVisitsService } from "../../site-visits/site-visits.service.js";
-import { ValidationError } from "../../../shared/errors.js";
+import { ConflictError, ValidationError } from "../../../shared/errors.js";
 
 interface Args {
   isoDateTime: string;
@@ -40,11 +40,21 @@ export const bookSiteVisit: AiTool<Args> = {
       return { booked: false, error: "That time is not an available slot. Offer one of the available slots instead.", availableSlots: offered.map((s) => ({ label: s.label, isoDateTime: s.isoDateTime })) };
     }
 
-    const visit = await siteVisitsService.bookSiteVisit(toolContext(ctx), {
-      leadId,
-      projectId,
-      isoDateTime: args.isoDateTime,
-    });
+    let visit;
+    try {
+      visit = await siteVisitsService.bookSiteVisit(toolContext(ctx), {
+        leadId,
+        projectId,
+        isoDateTime: args.isoDateTime,
+        source: "agent",
+      });
+    } catch (err) {
+      // One upcoming visit per lead: tell the model what already exists instead of booking a duplicate.
+      if (err instanceof ConflictError) {
+        return { booked: false, alreadyBooked: true, error: "This customer already has a site visit booked. Confirm that visit instead of booking another." };
+      }
+      throw err;
+    }
 
     return {
       booked: true,

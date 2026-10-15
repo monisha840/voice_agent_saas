@@ -99,6 +99,10 @@ export class MockLlmProvider implements ILanguageModel {
     if ((text.includes("green valley") || text.includes("interested")) && hasTool("get_project_details")) {
       return call("get_project_details");
     }
+    // Knowledge base: when the agent has knowledge (the tool is only offered then), look the question up.
+    if (hasTool("search_knowledge") && raw.trim() !== "" && !raw.startsWith("[")) {
+      return call("search_knowledge", { query: raw.slice(0, 200) });
+    }
     return { content: "Hello! This is a mock AI response for local development/testing." };
   }
 }
@@ -146,6 +150,11 @@ function respondToToolResult(messages: ChatMessage[], toolMsg: ChatMessage): str
       return result.booked
         ? "Your site visit is booked. Thank you, we look forward to seeing you!"
         : "Sorry, I could not book that slot. A colleague will follow up with you.";
+    case "search_knowledge": {
+      const first = (Array.isArray(result.excerpts) ? result.excerpts : [])[0] as { answer?: unknown; text?: unknown } | undefined;
+      const answer = first ? String(first.answer ?? first.text ?? "") : "";
+      return answer ? answer : "I will check that with the team and get back to you.";
+    }
     default:
       return `Noted. (mock response following tool result: ${toolMsg.content.slice(0, 80)})`;
   }

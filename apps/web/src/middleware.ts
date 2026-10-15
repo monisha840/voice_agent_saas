@@ -41,6 +41,9 @@ export async function middleware(req: NextRequest) {
         // Password accepted but the second factor is still pending: finish it on the sign-in page.
         return toLogin(req, pathname, search);
       }
+      // Rate-limited (429) or an API error (5xx) says nothing about the session: keep the cookie and let the page
+      // render its own error state, instead of signing a busy user out. Only an explicit rejection (401/403) clears it.
+      if (res.status === 429 || res.status >= 500) return NextResponse.next();
     } catch {
       // API unreachable: fall through to the login page, which explains it.
     }

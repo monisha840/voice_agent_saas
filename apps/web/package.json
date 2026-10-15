@@ -9,7 +9,9 @@
     "typecheck": "next typegen && tsc --noEmit",
     "lint": "next lint",
     "e2e": "node e2e/run.mjs",
-    "e2e:billing": "node e2e/billing-run.mjs"
+    "e2e:billing": "node e2e/billing-run.mjs",
+    "e2e:dashboard": "node e2e/dashboard-run.mjs",
+    "e2e:knowledge": "node e2e/knowledge-run.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.446.0",

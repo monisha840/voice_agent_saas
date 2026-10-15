@@ -155,6 +155,20 @@
       "when": 1791987201799,
       "tag": "0022_billing_grants_hardening",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1792046490039,
+      "tag": "0023_knowledge_base",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1792055434901,
+      "tag": "0024_number_management",
+      "breakpoints": true
     }
   ]
 }

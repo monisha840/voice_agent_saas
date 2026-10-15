@@ -47,6 +47,10 @@ describe("database catalog", () => {
     subscriptions: "tenant",
     usage_ledger: "tenant",
     billing_events: "tenant",
+    // Knowledge base (migration 0023): organization-owned collections, documents and searchable passages.
+    knowledge_bases: "tenant",
+    knowledge_documents: "tenant",
+    knowledge_items: "tenant",
     plans: "reference", // global configuration; no organization_id, no RLS; the runtime role holds SELECT only
     organizations: "tenant-root",
     memberships: "membership",

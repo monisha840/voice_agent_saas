@@ -7,6 +7,9 @@ import { Button } from "@/components/ui";
 import { LeadFormModal } from "@/components/LeadForm";
 import type { Project, TeamMember } from "@/lib/types";
 
+/** Fired after a lead is created so client-side lead lists reload. */
+export const LEADS_CHANGED_EVENT = "leads:changed";
+
 export function NewLeadButton({ projects, assignees }: { projects: Project[]; assignees: TeamMember[] }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -25,6 +28,7 @@ export function NewLeadButton({ projects, assignees }: { projects: Project[]; as
           onClose={() => setOpen(false)}
           onSaved={() => {
             setOpen(false);
+            window.dispatchEvent(new Event(LEADS_CHANGED_EVENT));
             router.refresh();
           }}
         />
