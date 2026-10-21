@@ -123,4 +123,4 @@ the reaper closes it; the in-flight reservation in section 1 accounts for it dur
 2. Reserve seconds per in-flight call (default 60) and per-call cap (default 7200): overshoot policy is a business
    decision.
 3. Applying 0022 to the dev database (and reconciling dev's early 0019 draft) is the owner's action.
-4. Whether `retentionDays` / `analytics` should be removed from seeded plans or built (see the matrix).
+4. ~~Whether `retentionDays` / `analytics` should be removed from seeded plans or built~~ RESOLVED 2026-10-21 (D3): removed. Migration 0025 strips `retentionDays`, `analytics`, `apiAccess` and `webhooks` from every plan; they are gone from the schema and the enforcement matrix.

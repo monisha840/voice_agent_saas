@@ -63,6 +63,7 @@ describe("database catalog", () => {
     sessions: "identity",
     mfa_recovery_codes: "identity",
     auth_throttle: "identity",
+    account_tokens: "identity", // single-use reset/verification tokens: user id + sha256(token) + timestamps; no tenant column, no tenant data
     stream_token_uses: "identity", // operational counters keyed by token id; no tenant data
     rate_limit_buckets: "identity", // shared rate-limit counters keyed by SHA-256; no tenant column, no tenant data
     stream_claims: "identity", // call id + instance id + heartbeat only; no tenant column, no tenant data
@@ -259,6 +260,7 @@ describe("direct database access", () => {
     /^modules\/agent-config\/agent-config\.service\.ts$/, // multi-statement transactions inside a tenant scope
     /^modules\/agents\/agents\.service\.ts$/, // transaction inside a tenant scope
     /^modules\/sales\/sales-call-hooks\.ts$/, // exists() probe inside a tenant scope
+    /^modules\/auth\/account-tokens\.repository\.ts$/, // account-recovery token store (identity data, addressed by token hash / user id)
     /^test\//,
   ];
 
@@ -331,7 +333,9 @@ describe("HTTP surface", () => {
     expect(failures).toEqual([]);
     // The public surface is small and known: health, readiness, the webhook-secret-protected provider endpoints, login.
     for (const p of publicSeen) {
-      expect(p).toMatch(/\/health|\/ready|\/metrics|\/api\/telephony\/exotel\/|\/api\/auth\/(login|demo-login|config|accept-invite)/);
+      expect(p).toMatch(
+        /\/health|\/ready|\/metrics|\/api\/telephony\/exotel\/|\/api\/auth\/(login|demo-login|config|accept-invite|forgot-password|reset-password|email-verification\/confirm)/,
+      );
     }
   });
 

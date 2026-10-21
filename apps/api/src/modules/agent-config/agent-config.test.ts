@@ -125,6 +125,10 @@ describe("resolve precedence", () => {
 describe("validation (HTTP 400)", () => {
   const bad: Array<[string, Record<string, unknown>]> = [
     ["unsupported language", { language: "fr-FR" }],
+    // Only English and Tamil are supported. These were selectable before but were never validated, so they must now
+    // be refused rather than quietly accepted and advertised.
+    ["Hindi, which this product does not support", { language: "hi-IN" }],
+    ["Telugu, which this product does not support", { language: "te-IN" }],
     ["unknown tool", { allowedTools: ["get_project_price", "drop_tables"] }],
     ["4 qualification questions", { qualificationQuestions: ["a", "b", "c", "d"] }],
     ["disclosure wording that hides the AI", { disclosureText: "Hello, this is Priya from Green Valley." }],
@@ -144,9 +148,9 @@ describe("validation (HTTP 400)", () => {
   it("accepts a compliant custom disclosure and persists the config", async () => {
     const res = await http(cookies.ownerA, "PUT", "/api/agent-config", {
       agentName: "Asha",
-      language: "hi-IN",
-      disclosureText: "Namaste, main Asha, ek virtual assistant hoon.",
-      qualificationQuestions: ["Kab tak lena hai?"],
+      language: "ta-IN",
+      disclosureText: "Vanakkam, naan Asha, oru virtual assistant.",
+      qualificationQuestions: ["Eppo vaanga plan panreenga?"],
       allowedTools: ["get_project_price"],
       callBehaviour: { maxResponseSentences: 2 },
     });

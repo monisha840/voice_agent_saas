@@ -37,6 +37,12 @@ export class TurnMetrics {
   outcome?: TurnOutcome;
   interrupted = false;
   cancelled = false;
+  /**
+   * The turn was abandoned by the turn deadline: it produced no outbound audio within
+   * `realtime.turnDeadlineMs` of the caller finishing speaking. Such a turn is `cancelled` too (an abandoned turn is a
+   * cancelled one); this flag says WHY, so a hanging pipeline is not read as a barge-in or a hang-up.
+   */
+  deadlineExceeded?: boolean;
   errorName?: string;
   /** Caller utterances dropped by backpressure while this turn was in flight. */
   droppedUtterances = 0;
@@ -102,6 +108,7 @@ export class TurnMetrics {
       outcome: this.outcome,
       interrupted: this.interrupted,
       cancelled: this.cancelled,
+      deadlineExceeded: this.deadlineExceeded,
       errorName: this.errorName,
       errorCategory: this.errorCategory,
       sttProvider: this.sttProvider,

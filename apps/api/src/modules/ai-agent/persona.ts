@@ -28,6 +28,14 @@ export const TONE_PHRASE: Record<string, string> = {
   energetic: "upbeat, energetic, and concise",
 };
 
+/**
+ * Language code -> the name the model should read. This is NOT the list of languages the product sells: an agent can
+ * only be configured in the codes in SUPPORTED_LANGUAGES (en-IN, ta-IN). The extra codes are here for the RUNTIME,
+ * which can legitimately land on a language nobody selected: `replyLanguageName` (reply-language.ts) reads this table
+ * to tell the model which language the caller has actually been speaking, and the caller can ask to switch mid-call.
+ * A code missing from here is passed through raw, so the model would be told to "Speak in te-IN (te-IN)".
+ * Keep the table wide; narrow the selectable list instead.
+ */
 export const LANGUAGE_NAME: Record<string, string> = {
   "hi-IN": "Hindi",
   "ta-IN": "Tamil",

@@ -41,6 +41,11 @@ const TOUCHED = [
   "SECURITY_EVENT_RETENTION_APPROVAL_REF",
   "SECURITY_EVENT_RETENTION_DAYS_AUTH_SESSION",
   "SECURITY_EVENT_RETENTION_ARCHIVE",
+  "APP_BASE_URL",
+  "EMAIL_PROVIDER",
+  "EMAIL_FROM",
+  "EMAIL_REPLY_TO",
+  "RESEND_API_KEY",
 ] as const;
 
 let saved: Record<string, string | undefined>;
@@ -76,6 +81,12 @@ function productionEnv() {
   process.env.PWNED_PASSWORDS = "fail-open";
   process.env.STREAM_TOKEN_KEYS = `k1:${Buffer.alloc(32, 5).toString("base64")}`;
   process.env.STREAM_ALLOW_STATIC_SECRET = "false";
+  // Transactional email: a real sender with its credentials, and the public dashboard address its links are built
+  // from (the email settings have their own tests in adapters/email/email-config.test.ts).
+  process.env.APP_BASE_URL = "https://app.example.com";
+  process.env.EMAIL_PROVIDER = "resend";
+  process.env.EMAIL_FROM = "Voice Agent <no-reply@mail.example.com>";
+  process.env.RESEND_API_KEY = "re_live_key";
 }
 
 describe("validateConfig", () => {

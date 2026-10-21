@@ -65,7 +65,11 @@ predicts real latency. **Nothing below is executed until explicitly authorised (
 * Concurrency: step 1 → 5 → 10 simultaneous calls (match the account's limit); watch pool usage and event-loop lag.
 
 ### 3.3 Sarvam (STT/LLM/TTS) with real 8 kHz phone audio
-* Language set: Tamil, Tanglish, English, Hindi samples recorded over the phone path (not studio audio).
+* Language set: Tamil, Tanglish (Tamil-English code-mix) and English samples recorded over the phone path (not studio
+  audio). These are the only three the product supports, and the only two selectable codes are `en-IN` and `ta-IN` —
+  Tanglish is not a separate code but how `ta-IN` behaves with the provider in code-mix mode. Hindi and the other
+  Indic languages are **not** supported and are not part of this validation; the runtime still copes with a caller who
+  switches to Hindi, but that is graceful degradation, not a validated language.
 * Per-turn budget: time to first transcript, LLM first token, TTS first byte, end-to-end turn gap; p50/p95/p99 over
   ≥ 200 turns; error and timeout rates; behaviour under provider 429/5xx (circuit breaker already implemented).
 * Cost: bound the run (fixed call count, max duration) and record provider spend.

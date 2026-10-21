@@ -14,14 +14,13 @@ export interface Plan {
   billingInterval: string;
   includedMinutes: number;
   trialDays: number | null;
+  // Only the entitlements the server actually enforces. retentionDays, analytics, apiAccess and
+  // webhooks were removed by migration 0025 (D3): they were advertised but never enforced, so the
+  // API no longer sends them. See docs/billing/entitlement-enforcement-matrix.md.
   entitlements: {
     maxConcurrentCalls?: number;
     maxAgents?: number;
     maxTeamMembers?: number;
-    retentionDays?: number;
-    analytics?: "none" | "basic" | "advanced";
-    apiAccess?: boolean;
-    webhooks?: boolean;
   };
   selfServe: boolean;
 }

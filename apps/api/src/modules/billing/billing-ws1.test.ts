@@ -8,6 +8,8 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, inArray, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 process.env.AI_PROVIDER = "mock";
 process.env.TELEPHONY_PROVIDER = "mock";
@@ -358,5 +360,25 @@ describe("seeded plan catalog vs the enforcement matrix", () => {
     for (const r of rows) {
       for (const k of Object.keys(r.entitlements)) expect(Object.keys(ENTITLEMENT_ENFORCEMENT), `${r.key}.${k}`).toContain(k);
     }
+  });
+
+  it("migration 0025 left no never-implemented entitlement advertised in any plan row", async () => {
+    const { REMOVED_ENTITLEMENTS } = await import("./plan-types.js");
+    const rows = (await adminSql!`select key, entitlements from plans order by sort_order`) as unknown as Array<{
+      key: string;
+      entitlements: Record<string, unknown>;
+    }>;
+    expect(rows.length).toBeGreaterThan(0);
+    for (const r of rows) for (const dead of REMOVED_ENTITLEMENTS) expect(Object.keys(r.entitlements), `${r.key}.${dead}`).not.toContain(dead);
+    // the enforced seat/concurrency caps the 0020 triggers read are still there (0025 is not allowed to widen anything)
+    const starter = rows.find((r) => r.key === "starter")!;
+    expect(starter.entitlements).toEqual({ maxConcurrentCalls: 3, maxAgents: 3, maxTeamMembers: 5 });
+  });
+
+  it("re-running migration 0025 is a no-op (idempotent) and never touches the enforced keys", async () => {
+    const sqlText = readFileSync(fileURLToPath(new URL("../../db/migrations/0025_drop_unenforced_entitlements.sql", import.meta.url)), "utf8");
+    const before = (await adminSql!`select md5(string_agg(key || ':' || entitlements::text, '|' order by key)) d from plans`)[0].d as string;
+    for (let i = 0; i < 2; i++) await adminSql!.unsafe(sqlText.replace(/--> statement-breakpoint/g, ""));
+    expect((await adminSql!`select md5(string_agg(key || ':' || entitlements::text, '|' order by key)) d from plans`)[0].d).toBe(before);
   });
 });

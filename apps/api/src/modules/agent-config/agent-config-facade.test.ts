@@ -86,7 +86,7 @@ describe("/api/agent-config write-through to agents", () => {
       companyName: "Acme Realty",
       greeting: "Namaste!",
       disclosureText: "This call is AI assisted.",
-      language: "hi-IN",
+      language: "ta-IN",
       tone: "friendly",
       callObjective: "Book a site visit",
       qualificationQuestions: ["Budget?", "Timeline?"],
@@ -102,7 +102,7 @@ describe("/api/agent-config write-through to agents", () => {
       companyName: "Acme Realty",
       greeting: "Namaste!",
       disclosureText: "This call is AI assisted.",
-      language: "hi-IN",
+      language: "ta-IN",
       tone: "friendly",
       callObjective: "Book a site visit",
       extraInstructions: "Be brief.",
@@ -126,8 +126,8 @@ describe("/api/agent-config write-through to agents", () => {
     expect(call.agentId).toBe(A.agentId);
     const full = await callsRepository.findByIdAnyOrg({ id: call.id });
     const runtime = await callRuntime.build(ctxA(), full!);
-    expect(runtime.config).toMatchObject({ agentName: "Meera", greeting: "Namaste!", tone: "friendly", language: "hi-IN" });
-    expect(runtime.languageCode).toBe("hi-IN");
+    expect(runtime.config).toMatchObject({ agentName: "Meera", greeting: "Namaste!", tone: "friendly", language: "ta-IN" });
+    expect(runtime.languageCode).toBe("ta-IN");
     expect(runtime.effectiveTools).toEqual(expect.arrayContaining(["end_call"]));
     expect(runtime.effectiveTools).not.toContain("book_site_visit");
   });

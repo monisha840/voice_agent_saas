@@ -10,18 +10,14 @@ import { Badge, Button, Card, Field, Notice, errorMessage, inputClass } from "@/
 import { PhoneNumbersCard } from "./PhoneNumbersCard";
 import { VoicePreview } from "./VoicePreview";
 
+/**
+ * The two languages the product supports; must stay in step with SUPPORTED_LANGUAGES on the API, which rejects
+ * anything else. Tanglish is not a third option: Tamil-English code-mixing is how the Tamil agent already behaves,
+ * which is what the label and the field hint say.
+ */
 const LANGUAGES: [string, string][] = [
   ["en-IN", "English (India)"],
-  ["hi-IN", "Hindi"],
-  ["ta-IN", "Tamil"],
-  ["te-IN", "Telugu"],
-  ["kn-IN", "Kannada"],
-  ["ml-IN", "Malayalam"],
-  ["mr-IN", "Marathi"],
-  ["bn-IN", "Bengali"],
-  ["gu-IN", "Gujarati"],
-  ["pa-IN", "Punjabi"],
-  ["od-IN", "Odia"],
+  ["ta-IN", "Tamil (including Tanglish)"],
 ];
 const TONES = ["professional", "friendly", "warm", "formal", "energetic"];
 const MAX_QUESTIONS = 3;
@@ -332,7 +328,10 @@ export function AgentEditor({
         <div className="space-y-6">
           <Card title="Language and greeting">
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <Field label="Language">
+              <Field
+                label="Language"
+                hint="Tamil covers Tanglish: a caller who mixes English words into Tamil is understood and answered the same way. These are the only languages the product supports."
+              >
                 <select disabled={!editable} value={form.language} onChange={(e) => set("language", e.target.value)} className={inputClass}>
                   {LANGUAGES.map(([code, label]) => (
                     <option key={code} value={code}>

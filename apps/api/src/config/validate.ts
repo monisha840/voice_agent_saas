@@ -56,7 +56,12 @@ const NUMERIC_VARS = [
   "PROVIDER_BREAKER_FAILURE_THRESHOLD",
   "PROVIDER_BREAKER_COOLDOWN_MS",
   "TOOL_TIMEOUT_MS",
+  "REALTIME_TURN_DEADLINE_MS",
+  "EMAIL_TIMEOUT_MS",
 ] as const;
+
+/** EMAIL_FROM / EMAIL_REPLY_TO: "name@example.com" or "Name <name@example.com>", and nothing that could split a header. */
+const ADDRESS_SETTING = /^(?:[^<>@\r\n,;:"]*<[^\s<>@,;:"]+@[^\s<>@,;:"]+\.[^\s<>@,;:"]+>|[^\s<>@,;:"]+@[^\s<>@,;:"]+\.[^\s<>@,;:"]+)$/;
 
 const isLocalOrigin = (o: string) => /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(o);
 
@@ -120,6 +125,51 @@ export function validateConfig(): ConfigReport {
     if (!cfg.realtime.sttStreaming) needed("REALTIME_STT_PROVIDER=assemblyai is streaming-only and requires REALTIME_STT_STREAMING=true");
   }
 
+  // Transactional email (adapters/email/): the invite, password-reset and verification links are built from
+  // APP_BASE_URL, so a wrong value is as damaging as a missing credential — a reset link that points at localhost, or
+  // at http://, is a link nobody can use safely. A real provider is refused without the credentials it needs.
+  {
+    const raw = (env.APP_BASE_URL ?? "").trim();
+    let parsed: URL | null = null;
+    if (raw) {
+      try {
+        parsed = new URL(raw);
+      } catch {
+        parsed = null;
+      }
+      if (!parsed || (parsed.protocol !== "http:" && parsed.protocol !== "https:")) {
+        errors.push(`APP_BASE_URL must be an absolute http:// or https:// URL, e.g. https://app.example.com (got "${raw}")`);
+      } else if (production && parsed.protocol !== "https:") {
+        errors.push("APP_BASE_URL must be an https:// URL in production: it is the base of every invite, password-reset and verification link");
+      } else if (production && isLocalOrigin(parsed.origin)) {
+        errors.push("APP_BASE_URL must be the dashboard's public address in production, not localhost");
+      }
+    } else if (production) {
+      errors.push(
+        "APP_BASE_URL must be set to the dashboard's public https:// address in production (the invite, password-reset and verification links in email are built from it)",
+      );
+    }
+  }
+  if (cfg.email.provider === "resend") {
+    const missing = (
+      [
+        ["RESEND_API_KEY", cfg.email.resendApiKey],
+        ["EMAIL_FROM", cfg.email.from],
+      ] as const
+    )
+      .filter(([, v]) => !v)
+      .map(([k]) => k);
+    if (missing.length > 0) needed(`EMAIL_PROVIDER=resend requires ${missing.join(", ")}`);
+  }
+  for (const [name, value] of [
+    ["EMAIL_FROM", cfg.email.from],
+    ["EMAIL_REPLY_TO", cfg.email.replyTo],
+  ] as const) {
+    if (value && !ADDRESS_SETTING.test(value)) {
+      errors.push(`${name} must be "name@example.com" or "Name <name@example.com>" (got "${value}")`);
+    }
+  }
+
   if (cfg.limits.maxCallDurationMs > 0 && cfg.limits.maxCallDurationMs >= cfg.staleCalls.inProgressMs) {
     warnings.push(
       `MAX_CALL_DURATION_MS (${cfg.limits.maxCallDurationMs}) is not below STALE_CALL_IN_PROGRESS_MS (${cfg.staleCalls.inProgressMs}); the stale-call reaper may close a call that is still within its allowed length`,
@@ -174,6 +224,13 @@ export function validateConfig(): ConfigReport {
     if (cfg.auth.scryptN < 16384) errors.push("AUTH_SCRYPT_N must be at least 16384 in production");
     if (cfg.telephonyProvider === "mock") warnings.push("TELEPHONY_PROVIDER=mock: no real calls will be placed or received");
     if (cfg.aiProvider === "mock") warnings.push("AI_PROVIDER=mock: conversations use the scripted mock models");
+    // An ERROR, not a warning, unlike mock telephony/AI above. With the mock sender nothing is delivered AND the
+    // invite endpoint returns the invitation link in its response body (that is its only purpose: making invites
+    // usable with no provider). In production that would put a live 7-day credential into access logs and browser
+    // devtools, and password resets and verification would silently never arrive. Refuse to start instead.
+    if (cfg.email.provider === "mock") {
+      errors.push("EMAIL_PROVIDER must not be mock in production: no email is delivered, and invitation links are returned in API responses");
+    }
     if (cfg.trustProxy === false) {
       warnings.push("TRUST_PROXY is not set: behind a load balancer every client appears to have the proxy's IP, so per-IP limits collapse");
     }

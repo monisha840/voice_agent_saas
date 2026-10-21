@@ -1,8 +1,10 @@
 # Release-candidate diff summary
 
-Date: 2026-10-14. Branch `phase5-sarvam-verified`. All work is **uncommitted**; nothing was staged, committed or pushed
-during this review. The proposed path list and commit split is in
-[`proposed-commit-manifest.txt`](proposed-commit-manifest.txt).
+Date: 2026-10-14. Branch `phase5-sarvam-verified`. **Historical record - superseded 2026-10-21.** At the time of
+writing nothing had been staged, committed or pushed; the work described here was since committed as `7f9cd53`
+(security and billing hardening) and extended by `0432360` (customer dashboard, agent builder with knowledge base,
+number management). Read the numbers below as a snapshot of that review's working tree, not of the repository today.
+The proposed path list and commit split is in [`proposed-commit-manifest.txt`](proposed-commit-manifest.txt).
 
 ## Totals
 

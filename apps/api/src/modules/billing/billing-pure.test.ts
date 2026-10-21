@@ -171,4 +171,37 @@ describe("entitlement enforcement matrix is complete", () => {
     const keys = [...Object.keys(entitlementsSchema.shape), "includedMinutes"].sort();
     expect(Object.keys(ENTITLEMENT_ENFORCEMENT).sort()).toEqual(keys);
   });
+
+  it("nothing unenforced is advertised: every status is ENFORCED (decision D3, 2026-10-21)", async () => {
+    const { ENTITLEMENT_ENFORCEMENT } = await import("./plan-types.js");
+    expect(Object.entries(ENTITLEMENT_ENFORCEMENT).filter(([, v]) => v !== "ENFORCED")).toEqual([]);
+    expect(Object.keys(ENTITLEMENT_ENFORCEMENT).sort()).toEqual(["includedMinutes", "maxAgents", "maxConcurrentCalls", "maxTeamMembers"]);
+  });
+
+  it("the keys removed as never-implemented are gone from the schema and the matrix", async () => {
+    const { entitlementsSchema, limitOverridesSchema, ENTITLEMENT_ENFORCEMENT, REMOVED_ENTITLEMENTS } = await import("./plan-types.js");
+    expect([...REMOVED_ENTITLEMENTS].sort()).toEqual(["analytics", "apiAccess", "retentionDays", "webhooks"]);
+    for (const k of REMOVED_ENTITLEMENTS) {
+      expect(Object.keys(entitlementsSchema.shape), k).not.toContain(k);
+      expect(Object.keys(limitOverridesSchema.shape), k).not.toContain(k);
+      expect(Object.keys(ENTITLEMENT_ENFORCEMENT), k).not.toContain(k);
+    }
+  });
+
+  it("a stale removed key stored in plan entitlements or limit_overrides is ignored, not rejected", async () => {
+    const { parseEntitlements, parseOverrides } = await import("./plan-types.js");
+    // Exactly the seeded 0019 shape, as a database not yet at 0025 still holds it.
+    expect(parseEntitlements({ maxConcurrentCalls: 3, maxAgents: 3, maxTeamMembers: 5, retentionDays: 30, analytics: "basic", apiAccess: false, webhooks: false })).toEqual({
+      maxConcurrentCalls: 3,
+      maxAgents: 3,
+      maxTeamMembers: 5,
+    });
+    // A negotiated override row written before the removal keeps its real limits and loses only the dead keys.
+    expect(parseOverrides({ includedMinutes: 5000, maxAgents: 12, retentionDays: 730, analytics: "advanced", apiAccess: true, webhooks: true })).toEqual({
+      includedMinutes: 5000,
+      maxAgents: 12,
+    });
+    // Nonsense in a dead key cannot break the read either (it is stripped before validation can object).
+    expect(parseOverrides({ maxConcurrentCalls: 2, analytics: "platinum", retentionDays: -1 })).toEqual({ maxConcurrentCalls: 2 });
+  });
 });

@@ -65,6 +65,8 @@ beforeAll(async () => {
     companyName: "Acme Realty",
     greeting: "Hello from Acme",
     disclosureText: "This is an AI assistant.",
+    // A legacy row from when hi-IN was selectable (it no longer is). The backfill copies the stored code as it stands,
+    // which is the point: it must not invent a value. The read path is what coerces it (see agents.test.ts).
     language: "hi-IN",
     tone: "warm",
     callObjective: "Book a visit",

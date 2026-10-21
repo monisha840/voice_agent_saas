@@ -34,6 +34,7 @@ export function loadEnv(): void {
 
 export type TelephonyProviderKind = "mock" | "exotel";
 export type AiProviderKind = "mock" | "sarvam";
+export type EmailProviderKind = "mock" | "resend";
 
 export interface AppConfig {
   nodeEnv: string;
@@ -83,11 +84,39 @@ export interface AppConfig {
     maxMalformedFrames: number;
     /** Largest WebSocket message accepted. */
     wsMaxPayloadBytes: number;
+    /**
+     * A caller turn that produces no outbound audio within this duration (ms) is abandoned.
+     * Bounds the sum of STT, all LLM hops, and TTS. Default 12000 ms, clamped to >= 2000.
+     */
+    turnDeadlineMs: number;
   };
   /** Extra Host header values treated as private/local (comma-separated API_PRIVATE_HOSTS). */
   privateHosts: string[];
   /** Bearer token for GET /metrics (METRICS_TOKEN, >= 16 chars). Unset: /metrics answers 404. */
   metricsToken: string | null;
+  /**
+   * Public base URL of the WEB DASHBOARD, without a trailing slash: the base of every link an email carries (invite,
+   * password reset, address verification). Not the API's address (NEXT_PUBLIC_API_URL) and not the telephony webhook
+   * (EXOTEL_WEBHOOK_BASE_URL). Development defaults to the dashboard's dev server; production must set a public
+   * https:// URL and startup validation refuses anything else.
+   */
+  appBaseUrl: string;
+  /**
+   * Transactional email (adapters/email/). Selection is explicit via EMAIL_PROVIDER, never a fallback: with "mock"
+   * (the default) nothing is delivered — the sender records what WOULD have been sent — so the product runs end to
+   * end with no credentials, and a real provider without its key fails loudly instead of quietly dropping mail.
+   */
+  email: {
+    provider: EmailProviderKind;
+    /** From header: "name@example.com" or "Name <name@example.com>". Required by a real provider. */
+    from: string;
+    /** Reply-To offered to recipients; empty = none. */
+    replyTo: string;
+    /** Per-attempt bound on one send. Retries and the circuit breaker reuse the shared PROVIDER_* settings. */
+    timeoutMs: number;
+    /** Required when EMAIL_PROVIDER=resend. */
+    resendApiKey: string;
+  };
   auth: {
     cookieName: string;
     /** Idle lifetime; refreshed while the session is used. */
@@ -411,12 +440,22 @@ export function getConfig(): AppConfig {
       outboundHighWaterBytes: Math.max(3200, intEnv("REALTIME_OUTBOUND_HIGH_WATER_BYTES", 256 * 1024)),
       maxMalformedFrames: Math.max(1, intEnv("REALTIME_MAX_MALFORMED_FRAMES", 100)),
       wsMaxPayloadBytes: Math.max(4096, intEnv("REALTIME_WS_MAX_PAYLOAD_BYTES", 256 * 1024)),
+      turnDeadlineMs: Math.max(2000, intEnv("REALTIME_TURN_DEADLINE_MS", 12000)),
     },
     metricsToken: (process.env.METRICS_TOKEN ?? "").length >= 16 ? (process.env.METRICS_TOKEN as string) : null,
     privateHosts: (process.env.API_PRIVATE_HOSTS ?? "")
       .split(",")
       .map((h) => h.trim().toLowerCase())
       .filter(Boolean),
+    // The dashboard's dev server (apps/web) in development; production supplies its own public https:// address.
+    appBaseUrl: (process.env.APP_BASE_URL ?? "http://localhost:3000").trim().replace(/\/+$/, ""),
+    email: {
+      provider: readProviderKind(process.env.EMAIL_PROVIDER, ["mock", "resend"] as const, "mock"),
+      from: (process.env.EMAIL_FROM ?? "").trim(),
+      replyTo: (process.env.EMAIL_REPLY_TO ?? "").trim(),
+      timeoutMs: Math.max(1, intEnv("EMAIL_TIMEOUT_MS", 10_000)),
+      resendApiKey: process.env.RESEND_API_KEY ?? "",
+    },
     auth: {
       cookieName: process.env.SESSION_COOKIE_NAME ?? "va_session",
       sessionTtlMs: Number(process.env.SESSION_TTL_MS ?? 7 * 24 * 3600_000),

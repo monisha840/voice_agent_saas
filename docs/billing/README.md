@@ -7,7 +7,7 @@ prices and limits are provisional business assumptions awaiting approval.
 
 | Concern | Where |
 |---|---|
-| Plan catalog (configuration) | table `plans`, seeded by migration `0019_billing_foundation.sql`; read via `GET /api/billing/plans` |
+| Plan catalog (configuration) | table `plans`, seeded by migration `0019_billing_foundation.sql` and narrowed by `0025_drop_unenforced_entitlements.sql`; read via `GET /api/billing/plans` |
 | Tenant subscription state | table `subscriptions` (one row per organization) |
 | Metered usage (append-only) | table `usage_ledger` |
 | Verified payment events (idempotency) | table `billing_events` |
@@ -24,13 +24,19 @@ allowed and keep today's configuration-based limits. Nothing changes for them un
 
 ## Plans (provisional defaults, `plans` table)
 
-| Plan | Price (INR / month) | Included minutes | Concurrent calls | Agents | Team | Retention | Analytics | API / webhooks |
-|---|---|---|---|---|---|---|---|---|
-| Trial (14 days, not self-selectable) | 0 | 30 | 1 | 1 | 3 | 14 d | basic | no |
-| Starter | 2,999 | 300 | 3 | 3 | 5 | 30 d | basic | no |
-| Growth | 14,999 | 2,000 | 10 | 10 | 15 | 90 d | advanced | yes |
-| Business | 49,999 | 8,000 | 30 | 30 | 50 | 365 d | advanced | yes |
-| Enterprise | custom (NULL) | negotiated | negotiated | negotiated | negotiated | negotiated | | |
+| Plan | Price (INR / month) | Included minutes | Concurrent calls | Agents | Team |
+|---|---|---|---|---|---|
+| Trial (14 days, not self-selectable) | 0 | 30 | 1 | 1 | 3 |
+| Starter | 2,999 | 300 | 3 | 3 | 5 |
+| Growth | 14,999 | 2,000 | 10 | 10 | 15 |
+| Business | 49,999 | 8,000 | 30 | 30 | 50 |
+| Enterprise | custom (NULL) | negotiated | negotiated | negotiated | negotiated |
+
+These five columns are the whole plan: everything a plan promises is enforced server-side. The former Retention,
+Analytics and API/webhook columns were **removed on 2026-10-21** (decision D3) because nothing enforced them -
+migration `0025_drop_unenforced_entitlements.sql` strips those keys from `plans`. Do not advertise a data-retention
+window, an analytics tier, API access or webhooks anywhere (pricing page, sales deck, contract): they do not exist.
+Details and the removal record: `docs/billing/entitlement-enforcement-matrix.md`.
 
 Prices are stored as integer paise; the UI formats INR from the catalog and hard-codes none. Change a plan with an
 owner-connection `UPDATE plans ...`; the application role has `SELECT` only. A subscription's `limit_overrides` JSON
@@ -48,14 +54,13 @@ Full matrix with tests: `docs/billing/entitlement-enforcement-matrix.md`.
 | Concurrent calls | ENFORCED | plan cap passed to the advisory-locked `createWithinLimits` |
 | Active agents (`maxAgents`) | ENFORCED | DB trigger, migration 0020 (create and unarchive; per-org advisory lock) |
 | Team members (`maxTeamMembers`) | ENFORCED | DB triggers on `memberships` and `invitations` (members + pending invitations) |
-| Retention days | NOT ENFORCED | retention is a global operator setting, not plan-controlled |
-| Analytics tier | NOT ENFORCED | no tiered analytics exist |
-| API access | NOT AVAILABLE | there is no API-key / public API feature |
-| Webhooks | NOT AVAILABLE | there is no outbound webhook delivery |
 
-The seeded JSON still carries retention/analytics/API/webhook values as configuration, but the UI presents only
-ENFORCED entitlements as plan benefits (`ENTITLEMENT_ENFORCEMENT` in `plan-types.ts`, also returned in
-`GET /api/billing/plans` `meta`). Seat caps are database-enforced regardless of `BILLING_ENFORCEMENT`; they apply only to
+Every row is ENFORCED, and that is the rule: an entitlement without a server-side gate and a test is not advertised.
+`retentionDays`, `analytics`, `apiAccess` and `webhooks` were removed on 2026-10-21 (migration 0025) instead of being
+built - they are gone from `entitlementsSchema`, from `ENTITLEMENT_ENFORCEMENT` and from the `plans` JSON, so
+`GET /api/billing/plans` no longer returns them. A dead key left behind in an old `subscriptions.limit_overrides` row
+is ignored on read (unknown keys are stripped, not rejected), so it grants and refuses nothing.
+Seat caps are database-enforced regardless of `BILLING_ENFORCEMENT`; they apply only to
 organizations with a subscription, never reduce existing seats, and a missing cap key means "no cap". They surface to
 clients as HTTP 429 with code `AGENT_LIMIT_REACHED` / `TEAM_MEMBER_LIMIT_REACHED`
 (`modules/billing/cap-errors.ts`, hooked in the app error handler).
@@ -200,7 +205,9 @@ No secrets are required. Invalid values fall back to the default.
 
 Final prices and allowances; rounding and minimum-duration policy; whether failed-after-answer calls bill; trial length
 and minutes; overage policy (block vs paid overage); GST registration details and invoice format; refund and
-cancellation terms; data-retention commitments per plan; payment gateway choice; whether ADMINs may manage billing.
+cancellation terms; payment gateway choice; whether ADMINs may manage billing. **Settled 2026-10-21 (D3):** no
+per-plan data-retention commitment is offered or advertised - retention stays a single global operator setting
+until a per-organization purge job and a legal policy exist.
 
 ## Design proposal for the security owner: self-service organization provisioning
 

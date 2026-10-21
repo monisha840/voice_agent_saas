@@ -70,9 +70,7 @@ Subject: the proposal in `docs/billing/README.md` (SECURITY DEFINER `app_create_
 |---|---|
 | Subscription status, included minutes, concurrent calls | ENFORCED (`callAdmission`; see 0022-era reserve logic in `call-admission.ts`) |
 | Active agents, team members (members + pending invitations) | ENFORCED (DB triggers, migration 0020) |
-| Retention days | NOT ENFORCED |
-| Analytics tier | NOT ENFORCED |
-| API access, webhooks | NOT AVAILABLE |
+| Retention days, analytics tier, API access, webhooks | REMOVED 2026-10-21 (migration 0025, D3) - advertised but never enforced, so they are no longer plan entitlements at all |
 
 Charging: no payment gateway, no webhook route, no invoice tables, and `paymentsEnabled` is `false` in the API. The
 mock provider refuses `NODE_ENV=production`. A paid plan can only become active through a verified payment event, which
@@ -124,7 +122,7 @@ workflow was triggered. **UNVERIFIED.** Steps (from `docs/security/ci.md`):
 6. Retention policy approval (five decisions in `operations-and-validation-plan.md`).
 7. Payments: gateway, signature verification route, GST invoices, refunds, dunning.
 8. Business sign-off on prices, allowances, rounding, trial and overage.
-9. Unenforced advertised entitlements (retention, analytics) or remove them from plan copy.
+9. ~~Unenforced advertised entitlements (retention, analytics)~~ CLOSED 2026-10-21 (D3): removed from the schema, the seeded plans and the plan copy by migration 0025.
 10. External security review / penetration test of tenant isolation.
 11. Dev-only `braces` advisory (low priority).
 
@@ -211,6 +209,6 @@ the conclusion of jobs api, web, audit, e2e. **GitHub CI status: NOT RUN** (`gh`
 2. Open flake: run-3 "Worker exited unexpectedly" (not reproduced); watch in CI with the JSON reporter.
 3. Real-provider validation checklist (14 items, all NOT RUN).
 4. First real GitHub Actions run with URL, including the new billing steps.
-5. Apply 0020-0022 to staging managed PostgreSQL and verify with the restricted role (dev DB still at 0021).
+5. Apply every migration to staging managed PostgreSQL and verify with the restricted role. (Dev is no longer at 0021 - check the real count with `select count(*) from drizzle.__drizzle_migrations`.)
 6. Retention policy approval; payments/GST/refunds; business sign-off on prices and policies.
-7. Unenforced advertised entitlements (retention, analytics); external penetration test; dev-only `braces` advisory.
+7. External penetration test; dev-only `braces` advisory. (Unenforced advertised entitlements: CLOSED 2026-10-21 by migration 0025, D3.)

@@ -1,5 +1,13 @@
 # Migration review: release candidate (0000 to 0022)
 
+> **Historical record - read with the 2026-10-21 correction.** Every observation below is from 2026-10-14, when the
+> head of the committed set was 0022 and the dev database was at 0021. Since then 0022, 0023 (knowledge base) and
+> 0024 (number management) were committed in `0432360` and applied to dev, and a further migration is in progress.
+> The review's *method and conclusions* still stand; its *counts and "dev is at ..." statements do not*. For the
+> real numbers at any time: head of the committed set is
+> `node -e 'const j=require("./apps/api/src/db/migrations/meta/_journal.json");console.log(j.entries.length, j.entries.at(-1).tag)'`,
+> and what a database has applied is `select count(*), max(created_at) from drizzle.__drizzle_migrations;`.
+
 Date: 2026-10-14 (work window 15:13 to 15:25 UTC). Server: PostgreSQL 16.14, container `voice-agent-postgres`
 (host port 5440). Scope: `apps/api/src/db/migrations` (SQL, `meta/_journal.json`, `meta/*_snapshot.json`),
 `apps/api/src/db/rollback/*`, the guarded migrator `apps/api/src/db/migrate.ts` + `migrate-guard.ts`.
@@ -400,8 +408,11 @@ roles, so record the reason in the ticket.
   the other migration-heavy tests) an explicit timeout, e.g. `{ timeout: 30_000 }`. Not changed here.
 * **D3 (docs stale).** `docs/security/migration-reconciliation.md` sections 1-2 and 4 describe dev at 19 rows and
   missing billing RLS, CHECKs, triggers and plans. `docs/billing/security-review-ws1.md` says 0020-0022 are pending.
-  Verified now: dev has 21 rows and is catalog-identical to a clean 0021 install apart from the 0019 hash, so only
-  0022 is pending. The hash discrepancy remains and is to be preserved.
+  Verified on 2026-10-14: dev had 21 rows and was catalog-identical to a clean 0021 install apart from the 0019
+  hash, so only 0022 was pending at that moment. **No longer current (2026-10-21):** 0022-0024 have since been
+  committed and applied to dev; re-check with
+  `select count(*), max(created_at) from drizzle.__drizzle_migrations;` rather than trusting any count written here.
+  The 0019 hash discrepancy remains and is to be preserved.
 * **D4 (low, design note).** `usage_ledger_guard_trg` is a row-level `BEFORE UPDATE OR DELETE` trigger, so it does not
   fire on `TRUNCATE`. The owner role can `TRUNCATE usage_ledger` (verified in a rolled-back transaction). The runtime
   role cannot (`42501`). If owner-level protection matters, add a `BEFORE TRUNCATE ... FOR EACH STATEMENT` trigger in a

@@ -2,9 +2,10 @@
  * Deterministic tests of the provider-neutral turn pipeline: real TurnDetector + TurnController, a fake clock and
  * scripted "turns". No sockets, providers, timers or database.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { TurnDetector } from "../audio/turn-detector.js";
-import { TurnController, type TurnContext, type TurnControllerOptions } from "./turn-controller.js";
+import { metrics } from "../runtime/metrics.js";
+import { MIN_TURN_DEADLINE_MS, TurnController, TurnDeadlineError, type TurnContext, type TurnControllerOptions } from "./turn-controller.js";
 
 const FRAME = 800; // 100 ms at 8 kHz
 const loud = () => {
@@ -516,5 +517,251 @@ describe("TurnController: turn identity (a cancelled turn never touches a newer 
     await tick();
     expect(r.finished[0]).toMatchObject({ outcome: "interrupted", turnId: a.turnId });
     expect(r.finished[1]).toMatchObject({ outcome: "completed", turnId: b.turnId });
+  });
+});
+
+/**
+ * The turn deadline. One clock drives everything here: vitest's fake timers fake `Date` AND `setTimeout`, and the
+ * controller's `now` is `Date.now`, so the deadline, the metrics' stamps and the timer cannot drift apart.
+ * `setImmediate` is deliberately left real so `tick()` still flushes microtasks.
+ */
+describe("TurnController: turn deadline", () => {
+  const T0 = 1_700_000_000_000;
+  const TRAILING_SILENCE_MS = 300; // say() ends with 3 quiet frames; speechEnd is back-dated by them
+  const DEADLINE_WARNING = "turn: deadline exceeded, caller turn abandoned";
+  const METRIC = "realtime_turn_deadline_abandoned_total";
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    vi.setSystemTime(T0);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** A turn whose provider never answers on its own: it ends only when the turn's signal is aborted. */
+  const hang = (ctx: TurnContext, gate: ReturnType<typeof deferred>) =>
+    new Promise<void>((resolve, reject) => {
+      gate.promise.then(resolve, reject);
+      ctx.signal.addEventListener("abort", () => reject(ctx.signal.reason), { once: true });
+    });
+
+  function deadlineRig(over: Partial<TurnControllerOptions> = {}, onTurn?: (ctx: TurnContext, gate: ReturnType<typeof deferred>) => Promise<void>) {
+    const logs: Array<{ level: "info" | "warn"; message: string; fields: Record<string, unknown> }> = [];
+    const r = rig(
+      {
+        now: () => Date.now(),
+        turnDeadlineMs: 2000,
+        log: {
+          info: (message, fields) => void logs.push({ level: "info", message, fields: fields ?? {} }),
+          warn: (message, fields) => void logs.push({ level: "warn", message, fields: fields ?? {} }),
+        },
+        ...over,
+      },
+      onTurn,
+    );
+    return { ...r, logs, find: (message: string) => logs.filter((l) => l.message === message) };
+  }
+
+  it("leaves a turn that gets audio out in time alone", async () => {
+    const r = deadlineRig({}, async (ctx, gate) => {
+      ctx.beginAiSpeaking();
+      ctx.metrics.mark("firstAudioByte");
+      await gate.promise;
+    });
+    r.say();
+    expect(r.c.state).toBe("AI_SPEAKING");
+    vi.advanceTimersByTime(60_000); // far beyond the deadline
+    expect(r.c.stats.deadlineAbandoned).toBe(0);
+    expect(r.turns[0].ctx.signal.aborted).toBe(false);
+    r.turns[0].gate.resolve();
+    await tick();
+    expect(r.find(DEADLINE_WARNING)).toHaveLength(0);
+    expect(r.find("turn: finished")[0].fields).toMatchObject({ outcome: "completed" });
+    expect(r.find("turn: finished")[0].fields.deadlineExceeded).toBeUndefined();
+  });
+
+  it("abandons a caller turn that produced no outbound audio, exactly once", async () => {
+    const before = metrics.get(METRIC, { stage: "stt" });
+    const r = deadlineRig({}, hang);
+    r.say();
+    const ctx = r.turns[0].ctx;
+    vi.advanceTimersByTime(2_000 - TRAILING_SILENCE_MS - 1);
+    expect(r.c.stats.deadlineAbandoned).toBe(0);
+    expect(ctx.signal.aborted).toBe(false);
+
+    vi.advanceTimersByTime(1);
+    expect(r.c.stats.deadlineAbandoned).toBe(1);
+    expect(ctx.signal.aborted).toBe(true);
+    expect(ctx.signal.reason).toBeInstanceOf(TurnDeadlineError);
+    expect(ctx.metrics.deadlineExceeded).toBe(true);
+    await tick();
+
+    vi.advanceTimersByTime(60_000); // a second firing must be impossible
+    expect(r.c.stats.deadlineAbandoned).toBe(1);
+    expect(r.find(DEADLINE_WARNING)).toHaveLength(1);
+    expect(metrics.get(METRIC, { stage: "stt" }) - before).toBe(1);
+    // An abandoned turn is a cancelled turn (the existing concept), not a failed one.
+    expect(r.find("turn: finished")).toHaveLength(1);
+    expect(r.find("turn: finished")[0].fields).toMatchObject({ outcome: "cancelled", cancelled: true, deadlineExceeded: true, turnId: ctx.turnId });
+    expect(r.find("turn: failed")).toHaveLength(0);
+    expect(r.c.state).toBe("IDLE"); // the call is not ended
+  });
+
+  it("measures the deadline from the end of the caller's speech, like speechEndToFirstAudioMs does", async () => {
+    const r = deadlineRig({}, hang);
+    r.say();
+    const speechEnd = r.turns[0].ctx.metrics.stamps.speechEnd;
+    expect(speechEnd).toBe(T0 - TRAILING_SILENCE_MS);
+    vi.advanceTimersByTime(2_000 - TRAILING_SILENCE_MS);
+    expect(r.c.stats.deadlineAbandoned).toBe(1);
+    expect(Date.now() - (speechEnd ?? 0)).toBe(2_000); // the deadline, not 2000 ms after the turn object was made
+    await tick();
+  });
+
+  it("logs the abandonment once, with the elapsed ms and the call id, and carries no content", async () => {
+    const r = deadlineRig({}, hang);
+    r.say();
+    vi.advanceTimersByTime(2_000);
+    await tick();
+    const warnings = r.find(DEADLINE_WARNING);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0].level).toBe("warn"); // expected, but notable
+    expect(warnings[0].fields).toMatchObject({
+      callId: "call-12345678",
+      turnId: "call-123-t1",
+      stage: "stt",
+      elapsedMs: 2_000,
+      deadlineMs: 2_000,
+    });
+    // Ids, timings and the stage ONLY: no transcript, prompt, audio or utterance buffer.
+    expect(Object.keys(warnings[0].fields).sort()).toEqual(["agentId", "callId", "deadlineMs", "elapsedMs", "organizationId", "stage", "turnId"]);
+  });
+
+  it("labels the stage the abandoned turn was waiting on", async () => {
+    const before = metrics.get(METRIC, { stage: "llm" });
+    const r = deadlineRig({}, async (ctx, gate) => {
+      ctx.metrics.mark("sttEnd");
+      ctx.metrics.mark("llmStart"); // STT answered; the model is the one hanging
+      return hang(ctx, gate);
+    });
+    r.say();
+    vi.advanceTimersByTime(2_000);
+    await tick();
+    expect(r.find(DEADLINE_WARNING)[0].fields).toMatchObject({ stage: "llm" });
+    expect(metrics.get(METRIC, { stage: "llm" }) - before).toBe(1);
+  });
+
+  it("a late result cannot be spoken after the turn was abandoned", async () => {
+    // This turn ignores its signal: the provider answers eventually, deadline or no deadline.
+    const r = deadlineRig({}, async (_ctx, gate) => void (await gate.promise));
+    r.say();
+    const ctx = r.turns[0].ctx;
+    vi.advanceTimersByTime(2_000);
+    expect(r.c.stats.deadlineAbandoned).toBe(1);
+    // Both gates the real speaking paths check (handler: `turn.signal.aborted` / `beginAiSpeaking`, tts-stream.ts: `beginAiSpeaking`).
+    expect(ctx.signal.aborted).toBe(true);
+    expect(ctx.isActive()).toBe(false);
+    expect(ctx.beginAiSpeaking()).toBe(false);
+    expect(r.c.state).not.toBe("AI_SPEAKING");
+
+    r.turns[0].gate.resolve(); // the late answer finally arrives
+    await tick();
+    expect(ctx.beginAiSpeaking()).toBe(false);
+    expect(ctx.isActive()).toBe(false);
+    expect(r.c.state).toBe("IDLE");
+    expect(r.c.history.map((h) => h.to)).not.toContain("AI_SPEAKING");
+  });
+
+  it("keeps the session usable: the next turn runs normally after an abandoned one", async () => {
+    const r = deadlineRig({}, async (ctx, gate) => {
+      if (r.turns.length === 1) return hang(ctx, gate);
+      await gate.promise;
+    });
+    r.say();
+    vi.advanceTimersByTime(2_000);
+    await tick();
+    expect(r.c.stats.deadlineAbandoned).toBe(1);
+    expect(r.c.state).toBe("IDLE");
+    expect(r.c.turnInFlight).toBe(false);
+
+    r.say(); // the caller tries again
+    expect(r.turns).toHaveLength(2);
+    const second = r.turns[1].ctx;
+    expect(second.signal.aborted).toBe(false);
+    expect(second.isActive()).toBe(true);
+    expect(second.beginAiSpeaking()).toBe(true);
+    second.metrics.mark("firstAudioByte");
+    vi.advanceTimersByTime(60_000);
+    expect(r.c.stats.deadlineAbandoned).toBe(1); // the healthy turn is untouched
+    r.turns[1].gate.resolve();
+    await tick();
+    expect(r.find("turn: finished")[1].fields).toMatchObject({ outcome: "completed", turnId: second.turnId });
+  });
+
+  it("an utterance the caller queued while the turn hung becomes the next turn", async () => {
+    const r = deadlineRig({ maxPendingUtterances: 2 }, async (ctx, gate) => {
+      if (r.turns.length === 1) return hang(ctx, gate);
+      await gate.promise;
+    });
+    r.say();
+    r.say(); // "hello? are you there?" queued behind the hung turn
+    expect(r.c.pendingCount).toBe(1);
+    vi.advanceTimersByTime(2_000);
+    await tick();
+    expect(r.c.stats.deadlineAbandoned).toBe(1);
+    expect(r.c.stats.droppedUtterances).toBe(0); // NOT discarded: an abandonment is not a barge-in
+    expect(r.turns).toHaveLength(2);
+    r.turns[1].gate.resolve();
+    await tick();
+  });
+
+  it("does not apply to an agent-initiated turn (a greeting answers no one's question)", async () => {
+    const r = deadlineRig();
+    const gate = deferred();
+    const done = r.c.runAiTurn(() => gate.promise);
+    vi.advanceTimersByTime(60_000);
+    expect(r.c.stats.deadlineAbandoned).toBe(0);
+    expect(r.find(DEADLINE_WARNING)).toHaveLength(0);
+    gate.resolve();
+    await done;
+  });
+
+  it("close() disarms the deadline: a closed call cannot be abandoned afterwards", async () => {
+    const r = deadlineRig({}, hang);
+    r.say();
+    r.c.close();
+    await tick();
+    vi.advanceTimersByTime(60_000);
+    expect(r.c.stats.deadlineAbandoned).toBe(0);
+    expect(r.find(DEADLINE_WARNING)).toHaveLength(0);
+    expect(r.c.state).toBe("CLOSED");
+  });
+
+  it("clamps a configured deadline below the floor up to it", () => {
+    const previous = process.env.REALTIME_TURN_DEADLINE_MS;
+    try {
+      process.env.REALTIME_TURN_DEADLINE_MS = "500";
+      expect(deadlineRig({ turnDeadlineMs: undefined }).c.turnDeadlineMs).toBe(MIN_TURN_DEADLINE_MS);
+      process.env.REALTIME_TURN_DEADLINE_MS = "9000";
+      expect(deadlineRig({ turnDeadlineMs: undefined }).c.turnDeadlineMs).toBe(9_000);
+    } finally {
+      if (previous === undefined) delete process.env.REALTIME_TURN_DEADLINE_MS;
+      else process.env.REALTIME_TURN_DEADLINE_MS = previous;
+    }
+    expect(MIN_TURN_DEADLINE_MS).toBe(2_000);
+    expect(deadlineRig({ turnDeadlineMs: 500 }).c.turnDeadlineMs).toBe(MIN_TURN_DEADLINE_MS);
+    expect(deadlineRig({ turnDeadlineMs: 30_000 }).c.turnDeadlineMs).toBe(30_000);
+  });
+
+  it("a clamped deadline fires at the floor, not at the value that was configured", async () => {
+    const r = deadlineRig({ turnDeadlineMs: 500 }, hang);
+    r.say();
+    vi.advanceTimersByTime(500); // what was asked for
+    expect(r.c.stats.deadlineAbandoned).toBe(0);
+    vi.advanceTimersByTime(2_000 - TRAILING_SILENCE_MS - 500); // the floor
+    expect(r.c.stats.deadlineAbandoned).toBe(1);
+    expect(r.find(DEADLINE_WARNING)[0].fields).toMatchObject({ deadlineMs: MIN_TURN_DEADLINE_MS, elapsedMs: 2_000 });
+    await tick();
   });
 });

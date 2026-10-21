@@ -2,6 +2,14 @@ name: Security
 
 # Pull-request gate for the security-relevant checks: restricted-role test suite, drift, dependency audit, browser e2e.
 # No secrets are used. Every database is a throwaway service container; nothing touches a real environment.
+#
+# WHEN THIS RUNS (read this before wondering why nothing happened):
+#   * push to `master` or `main` only. The default branch of this repository is `master`.
+#     A push to any other branch (e.g. `fix/...`) starts NOTHING.
+#   * any pull request targeting any branch - this is how a feature branch gets checked.
+#   * manual run from the Actions tab (`workflow_dispatch`), which GitHub only offers once this file exists on
+#     the DEFAULT branch. For the very first run, open a pull request.
+# `docs/release/ci-coverage.md` has the step-by-step first-run procedure.
 on:
   pull_request:
   push:
@@ -18,13 +26,19 @@ permissions:
 
 env:
   NODE_VERSION: "22"
+  # Must equal the pnpm that wrote pnpm-lock.yaml (lockfileVersion 9.0). Verified published version; also the
+  # default ARG in infra/docker/*.Dockerfile.
   PNPM_VERSION: "12.6.0"
 
 jobs:
   api:
     name: API (typecheck, lint, tests as restricted role, migration drift, build)
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # The vitest suite is serial by design (fileParallelism: false, ~1900 tests) and this job runs it once in full
+    # plus the named subsets, twice-applied migrations, drift probe and a production build. A 2-core runner is
+    # several times slower than a dev machine, so this ceiling is deliberately generous for the first runs;
+    # tighten it once a real run has shown the duration.
+    timeout-minutes: 60
     services:
       postgres:
         image: postgres:16-alpine
@@ -42,7 +56,8 @@ jobs:
     env:
       # Owner URL: the vitest global setup creates its own `voice_agent_test` database on this server, migrates it and
       # creates the restricted `voice_app` role; the tests then run as that role (RLS enforced).
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/voice_agent_ci
+      # 127.0.0.1, not "localhost": Node may resolve "localhost" to ::1, which the mapped service port does not answer.
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/voice_agent_ci
       AI_PROVIDER: mock
       TELEPHONY_PROVIDER: mock
     steps:
@@ -66,22 +81,35 @@ jobs:
       - run: pnpm --filter @voice-agent/api lint
       - name: Migrations apply to an empty database, twice (idempotent), with the target guard satisfied
         env:
-          DATABASE_MIGRATION_URL: postgresql://postgres:postgres@localhost:5432/voice_agent_ci
+          DATABASE_MIGRATION_URL: postgresql://postgres:postgres@127.0.0.1:5432/voice_agent_ci
         run: |
           pnpm --filter @voice-agent/api db:migrate
           pnpm --filter @voice-agent/api db:migrate
+          # The expected number is read from the journal, never hard-coded, so adding a migration cannot make this
+          # step stale. The log line below is the number to quote when recording the run.
           expected=$(node -e 'console.log(JSON.parse(require("fs").readFileSync("apps/api/src/db/migrations/meta/_journal.json","utf8")).entries.length)')
-          applied=$(docker run --rm --network host -e PGPASSWORD=postgres postgres:16-alpine psql -h localhost -U postgres -d voice_agent_ci -tAc "select count(*) from drizzle.__drizzle_migrations")
+          applied=$(docker run --rm --network host -e PGPASSWORD=postgres postgres:16-alpine psql -h 127.0.0.1 -U postgres -d voice_agent_ci -tAc "select count(*) from drizzle.__drizzle_migrations")
           echo "journal entries=$expected applied=$applied"
           test "$expected" = "$applied"
       - name: RLS, guardrails and migration safety suites (also part of the full run below; named so a failure is obvious)
         run: >-
           pnpm --filter @voice-agent/api exec vitest run
           src/db/rls.test.ts src/security/guardrails.test.ts src/db/migration-upgrade.test.ts src/db/migrate-guard.test.ts
-      - name: Billing suites (ledger, quotas, seat caps, migrations 0019-0022; also part of the full run below)
+      - name: Billing suites (ledger, quotas, seat caps, billing migration upgrade paths; also part of the full run below)
         run: >-
           pnpm --filter @voice-agent/api exec vitest run src/modules/billing
-      - run: pnpm --filter @voice-agent/api test
+      # Not just `vitest run`: vitest exits 0 even when a forked worker dies mid-file and silently drops its
+      # tests (seen locally 2026-10-21: "156 passed | 4 skipped (161)" with 37 tests unaccounted for). The guard
+      # reconciles vitest's own JSON report and fails the job when files or tests are missing, so a required check
+      # can never be green on a partial run. It also fails on genuine test failures, so nothing is masked.
+      - name: Full API suite + run-completeness guard
+        run: |
+          status=0
+          pnpm --filter @voice-agent/api exec vitest run --reporter=default --reporter=json --outputFile.json=test-report.json || status=$?
+          node apps/api/scripts/verify-test-run.mjs apps/api/test-report.json --min-files=150 --package-dir=apps/api
+          exit $status
+      # Requires every generated migration artefact to be committed: the .sql file, meta/<n>_snapshot.json and
+      # meta/_journal.json. A migration left untracked shows up here as drift.
       - name: Migration drift check (schema.ts must match the committed migrations)
         working-directory: apps/api
         run: |
@@ -98,7 +126,7 @@ jobs:
   web:
     name: Web (typecheck, lint, build)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -116,7 +144,7 @@ jobs:
   audit:
     name: Dependency audit
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -134,9 +162,11 @@ jobs:
         run: pnpm audit
 
   e2e:
-    name: Browser e2e (Playwright, account security and billing UI)
+    name: Browser e2e (Playwright, account security, billing, dashboard and knowledge base UI)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Four suites run serially and three of them do a full `next build` first. Deliberately generous for the
+    # first runs; tighten once a real run has shown the duration.
+    timeout-minutes: 60
     services:
       postgres:
         image: postgres:16-alpine
@@ -158,7 +188,8 @@ jobs:
       #   e2e/dashboard-run.mjs -> voice_agent_dashboard_ui_test / voice_app_dashuitest, API :4391, web :3391 (next build+start)
       #   e2e/knowledge-run.mjs -> voice_agent_kb_ui_test / voice_app_kbuitest, API :4491, web :3491 (next build+start)
       # Each runner creates its database at start and drops it (and its role) at exit.
-      E2E_ADMIN_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      # 127.0.0.1, not "localhost": Node may resolve "localhost" to ::1, which the mapped service port does not answer.
+      E2E_ADMIN_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

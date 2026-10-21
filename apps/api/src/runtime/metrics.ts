@@ -36,6 +36,11 @@ const DEFS = {
   security_janitor_failures_total: { kind: "counter", help: "Security janitor task failures by task.", labels: ["task"] },
   security_janitor_last_success_timestamp_seconds: { kind: "gauge", help: "Unix time of the last fully successful janitor cleanup.", labels: [] },
   auth_throttle_denied_total: { kind: "counter", help: "Login / MFA attempts refused by the throttle.", labels: ["kind"] },
+  realtime_turn_deadline_abandoned_total: {
+    kind: "counter",
+    help: "Caller turns abandoned because no outbound audio was produced within the turn deadline, by the stage they were waiting on.",
+    labels: ["stage"],
+  },
   process_start_time_seconds: { kind: "gauge", help: "Unix time this process started.", labels: [] },
 } as const satisfies Record<string, MetricDef>;
 
@@ -54,6 +59,7 @@ const SEED: Partial<Record<MetricName, readonly string[]>> = {
   stream_claim_conflicts_total: ["local", "db", "lost"],
   security_janitor_failures_total: ["cleanup", "retention"],
   auth_throttle_denied_total: ["login", "mfa"],
+  realtime_turn_deadline_abandoned_total: ["stt", "llm", "tts"],
   db_role_check_failures_total: ["problems", "inspect_error"],
   stream_auth_denied_total: [
     "unauthorized", "token_required", "token_reused",

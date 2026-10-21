@@ -10,9 +10,11 @@
 #    MetricsTargetDown / ApiRestartLoop and in alert-rules.test.yml if yours differs.
 #  - Known label values are exported at 0 from process start so the FIRST increment is visible to increase().
 #
-# DELIVERY IS UNVERIFIED: this repository configures no Prometheus, Alertmanager, pager or log aggregator. These
-# rules are validated by apps/api/src/runtime/alert-rules.test.ts (structure, metric names, threshold logic on
-# fixtures) and, where promtool is available, by `promtool test rules docs/security/alert-rules.test.yml`.
+# RULES VALIDATED, DELIVERY UNVERIFIED. This repository configures no Prometheus, Alertmanager, pager or log
+# aggregator, so nothing here proves an alert reaches a human. The rules themselves are validated by
+# apps/api/src/runtime/alert-rules.test.ts (structure, metric names, threshold logic on fixtures) and by
+# `promtool check rules alert-rules.yml` + `promtool test rules alert-rules.test.yml`, both of which PASSED on
+# 2026-10-21 (19 rules; 24 test cases). Commands, versions and output: monitoring-deployment.md section 4.
 groups:
   - name: voice-agent-security
     rules:

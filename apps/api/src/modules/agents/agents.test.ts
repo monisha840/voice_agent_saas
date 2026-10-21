@@ -174,6 +174,11 @@ describe("validation", () => {
     expect((await http(owner, "POST", "/api/agents", { ...base, behaviour: { conversationQuestions: ["a", "b", "c", "d"] } })).status).toBe(400);
     expect((await http(owner, "POST", "/api/agents", { ...base, moduleConfig: { sales: { offerSlots: 4 } } })).status).toBe(400);
     expect((await http(owner, "POST", "/api/agents", { ...base, language: "xx-XX" })).status).toBe(400);
+    // Only English and Tamil are supported; the languages that used to be selectable are now refused.
+    for (const lang of ["hi-IN", "te-IN", "kn-IN", "ml-IN", "mr-IN", "bn-IN", "gu-IN", "pa-IN", "od-IN"]) {
+      expect((await http(owner, "POST", "/api/agents", { ...base, language: lang })).status).toBe(400);
+    }
+    expect((await http(owner, "POST", "/api/agents", { ...base, name: "Lang ta", language: "ta-IN" })).status).toBe(201);
     expect((await http(owner, "POST", "/api/agents", { ...base, disclosureEnabled: false })).status).toBe(400);
     expect((await http(owner, "POST", "/api/agents", { personaName: "NoName" })).status).toBe(400);
     expect((await http(owner, "POST", "/api/agents", { ...base, organizationId: B.orgId })).status).toBe(400);
@@ -212,7 +217,7 @@ describe("permissions", () => {
 
 describe("multiple agents in one organization", () => {
   it("keeps configuration and knowledge independent", async () => {
-    const a1 = (await http(owner, "POST", "/api/agents", { name: "Multi 1", personaName: "One", tone: "warm", language: "hi-IN" })).body.data;
+    const a1 = (await http(owner, "POST", "/api/agents", { name: "Multi 1", personaName: "One", tone: "warm", language: "ta-IN" })).body.data;
     const a2 = (await http(owner, "POST", "/api/agents", { name: "Multi 2", personaName: "Two", tone: "formal" })).body.data;
     const bind = await http(owner, "PUT", `/api/agents/${a1.id}/knowledge`, {
       bindings: [{ sourceType: "project", sourceId: A.projectId }],
@@ -222,7 +227,7 @@ describe("multiple agents in one organization", () => {
 
     const r1 = (await http(owner, "GET", `/api/agents/${a1.id}`)).body.data;
     const r2 = (await http(owner, "GET", `/api/agents/${a2.id}`)).body.data;
-    expect(r1).toMatchObject({ personaName: "One", tone: "warm", language: "hi-IN", greeting: null });
+    expect(r1).toMatchObject({ personaName: "One", tone: "warm", language: "ta-IN", greeting: null });
     expect(r1.knowledge).toEqual([{ sourceType: "project", sourceId: A.projectId }]);
     expect(r2).toMatchObject({ personaName: "Two", tone: "formal", language: "en-IN", greeting: "Only for two" });
     expect(r2.knowledge).toEqual([]);
@@ -231,6 +236,56 @@ describe("multiple agents in one organization", () => {
     expect((await agentsRepository.findBoundToProject({ organizationId: A.orgId, projectId: A.projectId }))?.id).toBe(a1.id);
     const runtime = await agentsService.getRuntimeAgent(systemContext(A.orgId, "test"), { agentId: a2.id });
     expect(runtime?.personaName).toBe("Two");
+  });
+});
+
+describe("a row holding a language that is no longer supported", () => {
+  /**
+   * Hindi and the eight other Indic codes used to be selectable. Narrowing the list must not break an agent that was
+   * saved while they were: there is no migration that rewrites those rows, so the read path has to cope with them.
+   */
+  it("reads back as English, keeps the stored value, and stays editable", async () => {
+    const created = (await http(owner, "POST", "/api/agents", { name: "Stale lang", personaName: "Stale" })).body.data;
+    // Exactly what such a row looks like: written before the list was narrowed, untouched since.
+    await db.update(agents).set({ language: "hi-IN" }).where(eq(agents.id, created.id));
+
+    const read = (await http(owner, "GET", `/api/agents/${created.id}`)).body.data;
+    expect(read.language).toBe("en-IN");
+    expect((await http(owner, "GET", "/api/agents")).body.data.find((a: { id: string }) => a.id === created.id).language).toBe("en-IN");
+
+    // Nothing rewrote the database: the fallback is a read-time coercion, not a migration.
+    const [row] = await db.select().from(agents).where(eq(agents.id, created.id));
+    expect(row.language).toBe("hi-IN");
+
+    // The agent is still usable: an unrelated edit does not have to clear the language first.
+    const patched = await http(owner, "PATCH", `/api/agents/${created.id}`, { tone: "warm" });
+    expect(patched.status).toBe(200);
+    expect(patched.body.data).toMatchObject({ tone: "warm", language: "en-IN" });
+    // Saving the language the editor now shows is accepted and settles the row for good.
+    expect((await http(owner, "PATCH", `/api/agents/${created.id}`, { language: "en-IN" })).status).toBe(200);
+    const [settled] = await db.select().from(agents).where(eq(agents.id, created.id));
+    expect(settled.language).toBe("en-IN");
+  });
+
+  it("the live call path coerces the stored code too, so the call matches what the editor shows", async () => {
+    // getRuntimeAgent applies the same coercion as the read path. Before it did not, and a row still holding hi-IN
+    // displayed as English while its calls ran in Hindi -- a UI that lies about live behaviour. Decided 2026-10-21:
+    // the agent's configured default is pinned to a supported language. The stored row is left untouched, and the
+    // ai-agent runtime can still answer a caller who speaks another language (caller mirroring is unaffected).
+    const created = (await http(owner, "POST", "/api/agents", { name: "Stale runtime", personaName: "SR" })).body.data;
+    await db.update(agents).set({ language: "hi-IN" }).where(eq(agents.id, created.id));
+
+    const runtime = await agentsService.getRuntimeAgent(systemContext(A.orgId, "test"), { agentId: created.id });
+    expect(runtime?.language).toBe("en-IN");
+
+    // The row itself is not rewritten: no migration touched customer data, only what the runtime reads.
+    const [stored] = await db.select().from(agents).where(eq(agents.id, created.id));
+    expect(stored.language).toBe("hi-IN");
+
+    // A supported code is passed through untouched.
+    await db.update(agents).set({ language: "ta-IN" }).where(eq(agents.id, created.id));
+    const tamil = await agentsService.getRuntimeAgent(systemContext(A.orgId, "test"), { agentId: created.id });
+    expect(tamil?.language).toBe("ta-IN");
   });
 });
 

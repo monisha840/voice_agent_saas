@@ -1,13 +1,20 @@
 # Entitlement enforcement matrix
 
-Status as of 2026-10-14 (security workstream 1, item 5). Source of truth for the keys: `entitlementsSchema` and
-`ENTITLEMENT_ENFORCEMENT` in `apps/api/src/modules/billing/plan-types.ts`, and the `entitlements` JSON seeded into
-`plans` by migration 0019. A guard test (`billing-pure.test.ts`, `billing-ws1.test.ts`) fails if a key is added to the
-schema or to a plan without an explicit status here, so an advertised limit cannot silently be left unclassified.
+Status as of **2026-10-21** (decision D3 applied; first written 2026-10-14, security workstream 1, item 5). Source of
+truth for the keys: `entitlementsSchema` and `ENTITLEMENT_ENFORCEMENT` in
+`apps/api/src/modules/billing/plan-types.ts`, and the `entitlements` JSON in `plans` (seeded by migration 0019,
+narrowed by migration 0025). A guard test (`billing-pure.test.ts`, `billing-ws1.test.ts`) fails if a key is added to
+the schema or to a plan without an explicit status here, so an advertised limit cannot silently be left unclassified.
 
-Legend: ENFORCED = a server-side gate refuses the action and a test proves it. NOT IMPLEMENTED = the value is
-configuration only; nothing in the product checks it. NOT AVAILABLE = the feature itself does not exist, so there is
-nothing to gate. Do not present a NOT IMPLEMENTED / NOT AVAILABLE entry as a plan benefit (the UI already hides them).
+**Every entitlement this product advertises is now enforced.** The four keys that were configuration-only were removed
+on 2026-10-21 rather than built or relabelled - see "Removed, never implemented" below. Adding a key back means:
+a server-side gate, a test that proves it refuses, a row in the table below, and the key in `entitlementsSchema` +
+`ENTITLEMENT_ENFORCEMENT`. The guard tests also assert the removed keys stay out of the schema and out of every
+`plans` row, so one cannot reappear by accident.
+
+Legend: ENFORCED = a server-side gate refuses the action and a test proves it. (The historical statuses NOT
+IMPLEMENTED = value is configuration only, nothing checks it, and NOT AVAILABLE = the feature does not exist, are no
+longer used by any live key; they survive only in the removal record below.)
 
 | Entitlement (plan key) | Status | Enforcement point | Applies to | Bypass paths considered | Tests |
 |---|---|---|---|---|---|
@@ -16,10 +23,44 @@ nothing to gate. Do not present a NOT IMPLEMENTED / NOT AVAILABLE entry as a pla
 | `maxConcurrentCalls` | ENFORCED | plan cap lowers the configured cap passed to `createWithinLimits` (advisory lock, count-then-insert) | managed orgs; lower of plan and operator-configured cap wins | test/outbound/inbound share one path; cap independent per org | `billing.test.ts` (atomic under parallel creation), `billing-security.test.ts` (15 parallel -> N; mixed call types; per-tenant) |
 | `maxAgents` | ENFORCED | DB trigger `billing_enforce_agent_cap` (migration 0020), create and unarchive, per-org advisory lock | managed orgs; never reduces existing agents; missing key = no cap | any code path (trigger, not service) | `billing-audit.test.ts` (parallel creation, unarchive, per-org), `billing-migration.test.ts` |
 | `maxTeamMembers` | ENFORCED | DB triggers on `memberships` and `invitations` (members + pending invitations), per-org advisory lock | managed orgs; existing seats never removed | direct membership inserts and invitations both covered | `billing-audit.test.ts` (parallel invitations), `billing-migration.test.ts` |
-| `retentionDays` | NOT IMPLEMENTED | none: retention is a single global operator setting (`SECURITY_EVENT_RETENTION_*`, `docs/security/audit-retention.md`); no plan-level data retention job exists | - | - | none (matrix guard only) |
-| `analytics` (`none/basic/advanced`) | NOT IMPLEMENTED | none: no tiered analytics exist | - | - | none (matrix guard only) |
-| `apiAccess` | NOT AVAILABLE | no API-key / public API feature exists to gate | - | - | none |
-| `webhooks` (outbound) | NOT AVAILABLE | no outbound webhook delivery exists to gate | - | - | none |
+
+## Removed, never implemented (2026-10-21)
+
+Decision **D3**: these four keys were advertised in the seeded plan JSON while nothing in the product ever checked
+them. The owner's decision was to **stop advertising them, not to build them** - an unenforced data-retention
+guarantee in a plan is legal exposure, and the other three describe features that do not exist. They are not
+"deferred" or "coming soon": there is no commitment here to deliver any of them.
+
+| Removed key | Previous status | Why it was never real |
+|---|---|---|
+| `retentionDays` (14/30/90/365) | NOT IMPLEMENTED | retention is ONE global operator setting (`SECURITY_EVENT_RETENTION_*`, `docs/security/audit-retention.md`); no per-plan, per-organization purge job exists, and building one needs a legal/policy decision about deleting customer data (overlaps D7) |
+| `analytics` (`none/basic/advanced`) | NOT IMPLEMENTED | no tiered analytics exist; every organization sees the same dashboard |
+| `apiAccess` | NOT AVAILABLE | no API-key / public API feature exists to gate |
+| `webhooks` (outbound) | NOT AVAILABLE | no outbound webhook delivery exists to gate |
+
+What changed:
+
+* Migration **`0025_drop_unenforced_entitlements.sql`** strips the four keys from the `entitlements` JSON of every
+  `plans` row (idempotent; data only - no schema, policy, role or grant change). Migration 0019 must not be edited
+  (already applied everywhere, documented stored-hash mismatch), so it still seeds the dead keys into a brand-new
+  database and 0025 strips them again immediately afterwards.
+* `plan-types.ts`: the keys are out of `entitlementsSchema` (and therefore out of `limitOverridesSchema`) and out of
+  `ENTITLEMENT_ENFORCEMENT`, so `GET /api/billing/plans` no longer returns them in either `data` or
+  `meta.entitlementEnforcement`. `REMOVED_ENTITLEMENTS` records them for the guard tests.
+* **Stale stored keys are tolerated, not rejected.** `entitlementsSchema` is a non-strict Zod object, so a dead key
+  still present in a `subscriptions.limit_overrides` row (or in a plan row in a database not yet at 0025) is stripped
+  on read: it can neither grant nor refuse anything, and the real negotiated limits beside it are unaffected.
+  `subscriptions.limit_overrides` is deliberately *not* rewritten by 0025 - that table has FORCE ROW LEVEL SECURITY,
+  so an owner `UPDATE` without a tenant context would match no rows anyway.
+* Tests: `billing-pure.test.ts` ("nothing unenforced is advertised", "the keys removed as never-implemented are
+  gone", stale-key tolerance) and `billing-ws1.test.ts` (no `plans` row carries a removed key; 0025 re-run is a
+  no-op).
+* Not changed by this work, and still to do by whoever owns them: the optional `retentionDays` / `analytics` /
+  `apiAccess` / `webhooks` fields in the web client type (`apps/web/src/lib/billing.ts`, nothing renders them), the
+  column comment in `apps/api/src/db/schema.ts`, `docs/release/decisions.md` (D3 is still marked OPEN there),
+  `docs/staging-readiness-report.md`, `docs/release/README.md` item 6 and `docs/billing/security-review-ws1.md`
+  item 4. **Public pricing pages, sales collateral and any customer contract must not mention retention windows,
+  analytics tiers, API access or webhooks.**
 
 ## Related limits that are not plan entitlements
 
@@ -31,10 +72,10 @@ nothing to gate. Do not present a NOT IMPLEMENTED / NOT AVAILABLE entry as a pla
 
 ## Gaps and decisions (nothing was silently implemented)
 
-1. `retentionDays`, `analytics`: advertised in seeded JSON but not enforced. Options: remove from the seeded plans and
-   the schema until built, or implement. No code gate is cheap or obviously correct (retention would need a per-org
-   purge job and a legal/policy decision on deleting customer data), so none was added.
-2. `apiAccess`, `webhooks`: features do not exist; keep them out of marketing copy until they do.
+1. ~~`retentionDays`, `analytics`: advertised in seeded JSON but not enforced.~~ **Closed 2026-10-21 (D3): removed,
+   not built** - migration 0025 and the schema change above. Nothing is advertised that is not enforced.
+2. ~~`apiAccess`, `webhooks`: features do not exist.~~ **Closed 2026-10-21 (D3): removed** with the same change. Keep
+   them out of marketing copy; they are not on a roadmap here.
 3. Unmanaged (pre-billing) organizations bypass every plan limit by design (`UNMANAGED_LEGACY`). An operator must
    assign a subscription to put an organization under plan limits. A security owner should decide whether a hard
    cut-off date for unmanaged organizations is wanted.

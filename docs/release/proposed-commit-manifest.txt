@@ -1,4 +1,9 @@
-# Proposed release-candidate commit manifest — PROPOSAL ONLY. Nothing has been staged or committed.
+# Proposed release-candidate commit manifest — HISTORICAL, SUPERSEDED 2026-10-21.
+# This was a proposal written when nothing had been committed. It has since been carried out: the release candidate
+# was committed and pushed as 7f9cd53 (security and billing hardening) and extended by 0432360 (customer dashboard,
+# agent builder with knowledge base, number management). Do not use this file as a to-do list; use it only to check
+# what the 2026-10-14 review intended to include. For anything you are about to commit now, re-run
+# `git status --porcelain=v1 -uall` and review it against the exclusion rules below, which still apply.
 # Generated 2026-10-14 from `git status --porcelain=v1 -uall` on branch phase5-sarvam-verified.
 # Counts: 130 modified tracked files (incl. .gitignore), 0 deleted, 132 untracked (incl. 3 docs/release files
 # from parallel agents) + 2 files written by this review + docs/release/migration-review.md (pending, parallel agent).

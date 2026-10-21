@@ -52,7 +52,8 @@
 ## Alert rules (`docs/security/alert-rules.yml`)
 
 Deployment, Prometheus/Alertmanager config and the safe delivery test: `monitoring-deployment.md`. Unit tests with
-synthetic series: `alert-rules.test.yml` (promtool; written, not yet executed).
+synthetic series: `alert-rules.test.yml` (promtool; executed and PASSING on 2026-10-21 - see
+monitoring-deployment.md section 4).
 
 | Alert | Expression (summary) | for | Severity | Rationale and known blind spots |
 |---|---|---|---|---|

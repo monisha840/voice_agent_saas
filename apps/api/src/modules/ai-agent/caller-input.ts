@@ -72,7 +72,18 @@ export function shouldIgnoreUtterance(text: string, speechMs: number): boolean {
   return isFillerOnly(text) && speechMs < FILLER_MAX_MS;
 }
 
-/** Indic languages that are not the ones this product's agents speak: hearing one is almost always someone else's TV or street. */
+/**
+ * Indic languages that are not the ones this product's agents speak: hearing one is almost always someone else's TV
+ * or street.
+ *
+ * Hindi ("hi") is DELIBERATELY NOT in this set, even though Hindi is not a language the product sells or lets an agent
+ * be configured in (see SUPPORTED_LANGUAGES). This set decides what gets THROWN AWAY before the agent ever sees it,
+ * and the two mistakes do not cost the same: treating a real Hindi-speaking caller as noise means the agent answers
+ * their question with silence, re-prompts, and eventually hangs up on them, while letting a Hindi television through
+ * costs one wasted reply. Hindi is far and away the most likely non-Tamil language for a caller in India to actually
+ * use on the phone, so it stays out of here and is handled gracefully instead (fallback-lines.ts, reply-language.ts).
+ * Do not add it to "match" the supported-language list.
+ */
 const UNRELATED_LANGUAGES = new Set(["te", "kn", "ml", "bn", "gu", "mr", "pa", "od", "or", "as", "ur"]);
 
 const baseLanguage = (code: string) => code.toLowerCase().split(/[-_]/)[0];
@@ -91,6 +102,12 @@ export function isUnexpectedLanguage(heard: string | undefined, allowed: Readonl
 
 const ENGLISH = "en-IN";
 const TAMIL_CODE = "ta-IN";
+/**
+ * Hindi is not a language an agent can be configured in, but a caller can still ask for it mid-call, and a request
+ * the agent ignores ("please speak in Hindi" answered in Tamil, twice) loses the call. Honouring it is also the only
+ * consistent behaviour: a caller who simply SPEAKS Hindi already moves a mirroring agent into Hindi via
+ * reply-language.ts, so dropping the explicit request would only make the two paths disagree.
+ */
 const HINDI = "hi-IN";
 
 /** Words that introduce a request to change language. Kept narrow: a wrong switch is sticky for the rest of the call. */

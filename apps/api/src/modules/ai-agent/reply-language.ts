@@ -9,7 +9,14 @@ import { LANGUAGE_NAME } from "./persona.js";
 
 const ENGLISH = "en-IN";
 
-/** Unicode block -> agent language code. Latin is handled separately. */
+/**
+ * Unicode block -> agent language code. Latin is handled separately.
+ *
+ * Wider than SUPPORTED_LANGUAGES on purpose: an agent can only be CONFIGURED in English or Tamil, but a caller can
+ * speak whatever they like, and an agent that mirrors the caller should answer in the language they used rather than
+ * keep talking past them. Trimming this table would not make those callers go away; it would only make the agent
+ * answer them in the wrong language.
+ */
 const SCRIPTS: ReadonlyArray<{ code: string; from: number; to: number }> = [
   { code: "ta-IN", from: 0x0b80, to: 0x0bff },
   { code: "hi-IN", from: 0x0900, to: 0x097f },
@@ -67,7 +74,9 @@ export function detectReplyLanguage(text: string, providerCode?: string): string
   }
   if (best && best.n / letters >= NON_LATIN_SHARE) return best.code;
 
-  // Latin script: English, unless the provider says it heard another supported language (e.g. romanised Hindi).
+  // Latin script: English, unless the provider says it heard another language we can name (e.g. romanised Hindi).
+  // Romanised Tamil ("enna rate sir") lands here too and is answered in Tamil when the provider labels it ta-IN,
+  // which is the Tanglish case: there is no separate Tanglish code, only Tamil with English words in it.
   if (isReplyLanguage(providerCode)) return providerCode;
   return ENGLISH;
 }

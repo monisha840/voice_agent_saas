@@ -2,8 +2,10 @@
 # Run from this directory:   promtool test rules alert-rules.test.yml
 # Annotations are copied verbatim from alert-rules.yml; if you edit a summary/action there, update it here too
 # (promtool compares annotations exactly). Series use job="voice-agent-api", instance="api-1:3001".
-# STATUS: written but NOT executed in this repository's review (promtool was not available). See
-# docs/security/monitoring-deployment.md section 4.
+# STATUS: EXECUTED and PASSING. Last run 2026-10-21 with promtool 3.15.0 (image prom/prometheus:latest,
+# sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e): all 24 cases / 30 assertions SUCCESS,
+# no changes needed. Exact commands and output: docs/security/monitoring-deployment.md section 4. Re-run this file
+# after ANY edit to a summary/action in alert-rules.yml.
 rule_files:
   - alert-rules.yml
 evaluation_interval: 1m

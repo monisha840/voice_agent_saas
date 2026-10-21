@@ -19,6 +19,11 @@ const body = z
   })
   .strict();
 
+/**
+ * The sample sentence per language. The editor only offers en-IN and ta-IN (SUPPORTED_LANGUAGES); the Hindi sample is
+ * kept because a call can still run in Hindi at runtime (the caller asks to switch), so hearing whether a voice copes
+ * with Devanagari is still useful. Anything not listed falls back to the English sample.
+ */
 const SAMPLE: Record<string, string> = {
   "en-IN": "Hello, this is your property assistant from Green Valley Developers. How can I help you today?",
   "ta-IN": "வணக்கம், நான் Green Valley Developers-ல இருந்து பேசுறேன். உங்களுக்கு எப்படி உதவ முடியும்?",

@@ -24,6 +24,13 @@ type LineSet = {
   maxDuration: string;
 };
 
+/**
+ * English and Tamil are the languages an agent can be configured in. Hindi is NOT (it is not in
+ * SUPPORTED_LANGUAGES), but the lines are kept because the call can still end up in Hindi at runtime: the caller asks
+ * to switch (caller-input.ts) or a mirroring agent follows the Hindi they are speaking (reply-language.ts). Without a
+ * line set, a caller who has been speaking Hindi for the whole call would hear the silence line, the retry and the
+ * goodbye in English. Deleting these to "match" the supported list makes a live call worse, not cleaner.
+ */
 const LINES: Record<string, LineSet> = {
   "en-IN": {
     fallback: "Sorry, let me have a colleague follow up with you on that.",

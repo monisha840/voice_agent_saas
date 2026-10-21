@@ -6,7 +6,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { and, eq } from "drizzle-orm";
 
 import { adminDb as db } from "../../db/client.js";
-import { agentKnowledgeBindings, leads, organizationModules, projects } from "../../db/schema.js";
+import { agentKnowledgeBindings, agents, leads, organizationModules, projects } from "../../db/schema.js";
 import { systemContext } from "../../auth/context.js";
 import { ALL_TOOL_NAMES } from "../../ai-tools/index.js";
 import { callsRepository } from "../../test/repos.js";
@@ -152,7 +152,7 @@ describe("agent-specific prompts and language", () => {
     const g1 = await generic(A.orgId, "CR Aarav", {
       personaName: "Aarav",
       greeting: "Namaste from the Aarav desk",
-      language: "hi-IN",
+      language: "ta-IN",
       systemPrompt: "ROLE-ONE: you handle billing questions.",
       companyName: "Acme One",
     });
@@ -168,7 +168,7 @@ describe("agent-specific prompts and language", () => {
     const p1 = buildSystemPrompt(r1.promptParams, r1.config);
     const p2 = buildSystemPrompt(r2.promptParams, r2.config);
 
-    for (const needle of ["Aarav", "Namaste from the Aarav desk", "Hindi", "ROLE-ONE", "Acme One"]) {
+    for (const needle of ["Aarav", "Namaste from the Aarav desk", "Tamil", "ROLE-ONE", "Acme One"]) {
       expect(p1).toContain(needle);
       expect(p2).not.toContain(needle);
     }
@@ -177,17 +177,32 @@ describe("agent-specific prompts and language", () => {
       expect(p1).not.toContain(needle);
     }
     expect(p2).toContain("Speak in English");
-    expect(r1.config).toMatchObject({ agentName: "Aarav", greeting: "Namaste from the Aarav desk", language: "hi-IN", systemPrompt: "ROLE-ONE: you handle billing questions." });
+    expect(r1.config).toMatchObject({ agentName: "Aarav", greeting: "Namaste from the Aarav desk", language: "ta-IN", systemPrompt: "ROLE-ONE: you handle billing questions." });
     expect(r2.config.agentName).toBe("Bela");
   });
 
-  it("languageCode: en-IN is undefined (provider auto-detect), hi-IN is passed through", async () => {
+  it("languageCode: en-IN is undefined (provider auto-detect), a supported non-English code is passed through", async () => {
     const en = await generic(A.orgId, "CR english", { language: "en-IN" });
-    const hi = await generic(A.orgId, "CR hindi", { language: "hi-IN" });
     const ta = await generic(A.orgId, "CR tamil", { language: "ta-IN" });
     expect((await callRuntime.build(ctxA, await makeCall(A.orgId, { agentId: en.id, callType: "test" }))).languageCode).toBeUndefined();
-    expect((await callRuntime.build(ctxA, await makeCall(A.orgId, { agentId: hi.id, callType: "test" }))).languageCode).toBe("hi-IN");
     expect((await callRuntime.build(ctxA, await makeCall(A.orgId, { agentId: ta.id, callType: "test" }))).languageCode).toBe("ta-IN");
+  });
+
+  /**
+   * A row written while a wider language list was offered must not make the live call disagree with the editor:
+   * `getRuntimeAgent` coerces an unsupported stored code to en-IN, so the call falls back to provider auto-detect
+   * rather than speaking a language the product does not support and the UI does not show.
+   */
+  it("an unsupported stored language is coerced on the live call path, not spoken", async () => {
+    const stale = await generic(A.orgId, "CR stale", { language: "en-IN" });
+    await db.update(agents).set({ language: "hi-IN" }).where(eq(agents.id, stale.id));
+    const stored = await db.select({ language: agents.language }).from(agents).where(eq(agents.id, stale.id));
+    expect(stored[0]?.language).toBe("hi-IN"); // the row itself is untouched
+
+    const built = await callRuntime.build(ctxA, await makeCall(A.orgId, { agentId: stale.id, callType: "test" }));
+    expect(built.config.language).toBe("en-IN");
+    expect(built.languageCode).toBeUndefined();
+    expect(buildSystemPrompt(built.promptParams, built.config)).not.toContain("Hindi");
   });
 });
 

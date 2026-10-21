@@ -5,7 +5,23 @@ import { isKnownToolName } from "../../ai-tools/index.js";
 const toolName = z.string().refine(isKnownToolName, { message: "Unknown tool" });
 const MAX_TOOLS = 50;
 
-export const SUPPORTED_LANGUAGES = ["en-IN", "hi-IN", "ta-IN", "te-IN", "kn-IN", "ml-IN", "mr-IN", "bn-IN", "gu-IN", "pa-IN", "od-IN"] as const;
+/**
+ * The languages an agent can be CONFIGURED in: the two this product actually supports and sells.
+ *
+ * "Tanglish" is not a third code. Tamil-English code-mixing is how `ta-IN` behaves, because the speech provider runs
+ * in code-mix mode (SARVAM_STT_MODE / SARVAM_STT_REALTIME_MODE default to "codemix"), so a Tamil agent already
+ * understands and answers a caller who drops English words into Tamil.
+ *
+ * Nothing else belongs here until it has been validated end to end over the 8 kHz phone path. In particular Hindi
+ * (hi-IN) is NOT supported: offering it would be advertising a capability nobody has checked.
+ *
+ * Rows written while a wider list was offered keep their stored value in the database (there is no migration that
+ * rewrites them); the read path coerces an unknown code to en-IN, see `agent-config.service.ts` and `agents.service.ts`.
+ * Separately, the ai-agent RUNTIME still recognises and can answer in languages that are not on this list (see
+ * `ai-agent/caller-input.ts` and `ai-agent/fallback-lines.ts`): handling an unexpected caller gracefully is not the
+ * same thing as selling the language, and that code must not be narrowed to match this list.
+ */
+export const SUPPORTED_LANGUAGES = ["en-IN", "ta-IN"] as const;
 export const TONES = ["professional", "friendly", "warm", "formal", "energetic"] as const;
 
 /**

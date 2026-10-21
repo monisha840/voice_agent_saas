@@ -1,8 +1,9 @@
 # Release-candidate decision log
 
-Prepared: 2026-10-14 (release-candidate preparation, deliverable 4). Every record below is **OPEN**. This document
-describes the current behaviour and the options; it does **not** choose a business, billing, security or operations
-policy. A record moves to DECIDED only when the named owner role writes the decision, date and reference into it.
+Prepared: 2026-10-14 (release-candidate preparation, deliverable 4). Every record below is **OPEN except D3**, which
+was decided on 2026-10-21. This document describes the current behaviour and the options; it does **not** choose a
+business, billing, security or operations policy. A record moves to DECIDED only when the named owner role writes the
+decision, date and reference into it.
 
 Facts are taken from code and docs in this repository as of this date. File paths are relative to the repository root;
 API source is under `apps/api/src/`.
@@ -11,7 +12,7 @@ API source is under `apps/api/src/`.
 |---|---|---|---|
 | D1 | Minute overshoot policy, 7,200 s billable cap, 60 s admission reserve | business + billing | OPEN |
 | D2 | Strict payment-event ordering (per-subscription high-water mark) | billing + security | OPEN |
-| D3 | Unenforced `retentionDays` and `analytics` entitlements | business | OPEN |
+| D3 | Unenforced `retentionDays` and `analytics` entitlements | business | **DECIDED 2026-10-21: option B (remove)** |
 | D4 | Legacy unmanaged organizations | business + security | OPEN |
 | D5 | Direct Exotel streams, production number/flow inventory, account-sid and edge IP allow-lists | security + ops | OPEN |
 | D6 | Migration 0022 approval and execution | security (approve) + ops (execute) | OPEN |
@@ -106,7 +107,24 @@ Decision: ________  Owner/date: ________  Reference: ________
 
 ## D3. Unenforced `retentionDays` and `analytics` entitlements
 
-**Owner:** business (with legal input for retention). **Status: OPEN.**
+**Owner:** business (with legal input for retention). **Status: DECIDED 2026-10-21 - option B (remove).**
+
+### Decision (2026-10-21)
+**Option B was chosen: the keys are being removed, not built and not relabelled.** `retentionDays` and `analytics`
+are being taken out of the seeded plan entitlements and the entitlement schema, so the catalog no longer carries a
+benefit the product does not enforce. A migration that drops them is in progress at the time of writing; the
+"Current behaviour" and "Options" sections below describe the situation that led to the decision and are kept for
+the record.
+
+Consequences:
+* Plan/pricing pages, sales collateral and contracts must never mention per-organization data retention tiers or
+  tiered analytics. Nothing is "coming soon" - the keys are gone.
+* Retention remains a single global operator setting (`SECURITY_EVENT_RETENTION_*`), which is D7's subject, not a
+  per-plan benefit.
+* Verify before quoting this record: the removal is complete only when the migration, the seeded `plans` rows, the
+  entitlement schema and the enforcement-matrix doc all agree. Check `docs/billing/entitlement-enforcement-matrix.md`
+  and the newest migration under `apps/api/src/db/migrations/`.
+* Any later decision to actually sell retention or analytics tiers is a new record, not a reopening of D3.
 
 ### Context
 Plans seeded by migration `0019_billing_foundation.sql` carry `retentionDays` (14/30/90/365) and `analytics`
@@ -128,10 +146,14 @@ Plans seeded by migration `0019_billing_foundation.sql` carry `retentionDays` (1
 | C. Relabel as "coming soon"/informational (keep data, keep hidden from benefits) | Lowest effort; risk that sales or marketing copy presents them as included; keeps a misleading value in the catalog. |
 
 ### Blocked until decided
-Public plan/pricing pages and sales collateral; any customer contract mentioning retention or analytics tiers.
+~~Public plan/pricing pages and sales collateral; any customer contract mentioning retention or analytics tiers.~~
+Unblocked by the 2026-10-21 decision: those pages may ship, provided they do not mention retention or analytics
+tiers at all.
 
 ### Decision record
-Decision: ________  Owner/date: ________  Reference: ________
+Decision: **B - remove the `retentionDays` and `analytics` keys from the seeded plans and the entitlement schema;
+do not build, do not relabel as "coming soon".**  Owner/date: owner, 2026-10-21.
+Reference: migration that drops the unenforced entitlements, plus the entitlement-enforcement matrix update.
 
 ---
 

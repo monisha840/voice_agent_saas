@@ -64,7 +64,8 @@ knowledge excluded, errors surfaced.
   simulated and real calls, not here. Tamil/Tanglish quality depends on the configured LLM (mock provider in
   development replies in a fixed script).
 * **Provider/model per agent**: providers and models are deployment-wide, not per agent; language is validated against
-  the supported list and voices are checked by the existing voice preview.
+  the supported list (`en-IN` and `ta-IN` only — Tamil covers Tanglish; see `agent-config.validation.ts`) and voices
+  are checked by the existing voice preview.
 * **Multi-instance**: playground sessions are in process memory; behind several API instances the playground needs
   session affinity.
 * **Agent editor integration**: the editor file is being changed by the dashboard workstream, so knowledge selection and

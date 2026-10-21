@@ -181,7 +181,13 @@ const agentsServiceImpl = {
    * Archived agents are returned too: a call that already started keeps its agent.
    */
   async getRuntimeAgent(ctx: RequestContext, params: { agentId: string }): Promise<AgentRow | null> {
-    return agentsRepository.findById({ organizationId: ctx.organizationId, id: params.agentId });
+    const row = await agentsRepository.findById({ organizationId: ctx.organizationId, id: params.agentId });
+    if (!row) return null;
+    // Coerce an unsupported stored language exactly as the read path does (see `present` and agent-config.service),
+    // so the live call speaks what the editor shows. Without this an older row holding e.g. "hi-IN" displays as
+    // English while the call runs in Hindi. The ai-agent runtime can still ANSWER a caller in a language that is not
+    // on this list (caller-language mirroring) -- this only pins the agent's own configured default.
+    return (SUPPORTED_LANGUAGES as readonly string[]).includes(row.language) ? row : { ...row, language: "en-IN" };
   },
 
   async create(ctx: RequestContext, input: unknown) {

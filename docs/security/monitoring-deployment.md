@@ -1,8 +1,12 @@
 # Monitoring deployment and safe delivery test
 
-Status: **UNVERIFIED end to end.** Nothing in this repository runs Prometheus or Alertmanager, and no destination
-(pager, chat, e-mail) exists in the code or docs. Every receiver below is a `PLACEHOLDER`: the operator must supply
-real ones. Do not paste real credentials into this repository; keep them in the monitoring system's secret store.
+Status: **rule files and routing config VALIDATED 2026-10-21 (section 4); alert DELIVERY still UNVERIFIED.**
+`promtool` and `amtool` now pass against the files in this directory, which proves the rules parse, evaluate and
+annotate as intended and that the Alertmanager skeleton in section 3 routes as described. That is all it proves.
+Nothing in this repository runs Prometheus or Alertmanager, and no destination (pager, chat, e-mail) exists in the
+code or docs. Every receiver below is a `PLACEHOLDER`: the operator must supply real ones. **No alert from this
+repository has ever been delivered to a human.** Do not paste real credentials into this repository; keep them in
+the monitoring system's secret store.
 
 ## 1. Prerequisites on the API side
 
@@ -109,41 +113,137 @@ relying on this.
 
 ## 4. Validate the rules offline (no delivery)
 
-Tool availability on the review machine on 2026-10-14: `promtool` and `amtool` are NOT on PATH, and no
-`prom/prometheus` or `prom/alertmanager` Docker image is present locally, so none of the commands below were run.
-**All promtool/amtool results are UNVERIFIED.** No global software was installed and no image was pulled.
+Run on **2026-10-21** from `docs/security/`, using the official Docker images (Docker Desktop 29.6.1, Windows). The
+images were pulled for this check; no global software was installed. Exact images:
 
-Run where the binaries (or the official images) exist, from `docs/security/`:
+| Image | Digest | Tool version |
+|---|---|---|
+| `prom/prometheus:latest` | `sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e` | promtool 3.15.0 (go1.27.1, built 2026-09-25) |
+| `prom/alertmanager:latest` | `sha256:e9733bafb1bdef9b00e25a21f8f99dc26a22224bf16641ad754d1649f4c3357a` | amtool 0.34.1 (go1.26.8, built 2026-09-17) |
 
-```sh
-promtool check rules alert-rules.yml
-promtool test rules alert-rules.test.yml        # 24 synthetic-series cases covering every alert
-promtool check config prometheus.yml            # your real file; also verifies credentials_file exists
-amtool check-config alertmanager.yml
-```
+`latest` is a moving tag: pin a digest or a version tag if you need to reproduce these results exactly. If you have
+the binaries on PATH, drop the `docker run --rm -v "$PWD:/w" -w /w --entrypoint <tool>` prefix from each command.
 
-Using Docker instead (pulls the official images; an operator decision, not done here):
+### 4.1 Rule file syntax - PASS
 
 ```sh
 docker run --rm -v "$PWD:/w" -w /w --entrypoint promtool prom/prometheus:latest check rules alert-rules.yml
+```
+
+```
+Checking alert-rules.yml
+  SUCCESS: 19 rules found
+```
+
+### 4.2 Rule unit tests - PASS
+
+```sh
 docker run --rm -v "$PWD:/w" -w /w --entrypoint promtool prom/prometheus:latest test rules alert-rules.test.yml
+```
+
+```
+  SUCCESS
+```
+
+All 24 test cases (30 `eval_time` assertions) pass, and each of the 19 alerts in `alert-rules.yml` is named by at
+least one case. **No rule and no test needed changing** on the first run: the annotations in the two files already
+matched exactly, and every `for:`/threshold assertion held.
+
+A passing run prints one word, which is easy to mistake for a harness that did nothing, so the harness was confirmed
+to be live. With `summary: "Many throttled MFA attempts"` changed to `"Many throttled MFA attempts!!"` in a
+throwaway copy of `alert-rules.yml` outside the repository, promtool reported:
+
+```
+  FAILED:
+    name: MfaThrottleSpike fires on > 10 throttled MFA attempts in 10 minutes,
+    alertname: MfaThrottleSpike, time: 15m,
+        exp:[ ... summary="Many throttled MFA attempts"}]
+        got:[ ... summary="Many throttled MFA attempts!!"}]
+```
+
+The copy was discarded; the files in this directory are unmodified. That is exactly the failure to expect when a
+summary or action is edited in one file and not the other.
+
+### 4.3 Alertmanager config and routing - PASS (structure only)
+
+The section 3 skeleton is a fragment inside this document, not a loadable file, so it was extracted verbatim to a
+temporary `alertmanager.yml` outside the repository and checked there. The repository still carries no real
+`alertmanager.yml` on purpose: such a file must name receivers, and committed placeholder receivers that silently
+drop every notification are more dangerous than an obvious fragment.
+
+```sh
 docker run --rm -v "$PWD:/w" -w /w --entrypoint amtool prom/alertmanager:latest check-config alertmanager.yml
 ```
 
-Expected: `SUCCESS` for check rules / check-config and `SUCCESS` for test rules. A failing test prints the expected
-versus actual alert set; the usual cause is an annotation edited in `alert-rules.yml` and not in the test file
-(promtool compares annotations exactly), or a changed threshold.
-
-Routing check (static, no network):
-
-```sh
-amtool config routes test --config.file=alertmanager.yml --verify.receivers=oncall-pager severity=critical alertname=DbAuthorizationErrors
-amtool config routes test --config.file=alertmanager.yml --verify.receivers=delivery-test test=delivery-check severity=critical alertname=DeliveryTest
-amtool config routes test --config.file=alertmanager.yml --verify.receivers=heartbeat severity=none alertname=Watchdog
+```
+Checking 'alertmanager.yml'  SUCCESS
+Found:
+ - global config
+ - route
+ - 1 inhibit rules
+ - 4 receivers
+ - 0 templates
 ```
 
-Also run `amtool config routes show --config.file=alertmanager.yml` and read the tree: a `critical` alert that
-lands on `ops-default` means the routing is wrong.
+Routing checks (static, no network). Each printed exactly the receiver named in `--verify.receivers` and exited 0:
+
+```sh
+amtool config routes test --config.file=alertmanager.yml --verify.receivers=oncall-pager  severity=critical alertname=DbAuthorizationErrors   # -> oncall-pager
+amtool config routes test --config.file=alertmanager.yml --verify.receivers=delivery-test test=delivery-check severity=critical alertname=DeliveryTest  # -> delivery-test
+amtool config routes test --config.file=alertmanager.yml --verify.receivers=heartbeat     severity=none alertname=Watchdog                     # -> heartbeat
+```
+
+`amtool config routes show --config.file=alertmanager.yml` prints the tree below. Read it to confirm no `critical`
+alert lands on `ops-default`, and note that the second case above is routed to `delivery-test` despite being
+`severity=critical`, because the `test` matcher is ordered ahead of the pager route. That ordering is what makes the
+section 5 synthetic test safe.
+
+```
+Routing tree:
+.
+└── default-route  receiver: ops-default
+    ├── {alertname="Watchdog",severity="none"}  receiver: heartbeat
+    ├── {test="delivery-check"}  receiver: delivery-test
+    ├── {severity="critical"}  receiver: oncall-pager
+    └── {severity="warning"}  receiver: ops-default
+```
+
+This proves the routing TREE is right. It proves nothing about delivery: every receiver here has no `*_configs`, so
+a real Alertmanager would accept each of these notifications and then drop it.
+
+### 4.4 Scrape config - PASS (structure only, two paths rewritten)
+
+The section 2 fragment was checked too, because a bad `relabel_configs` regex or a misspelled field would otherwise
+only surface in production. It names absolute paths that do not exist on a review machine, so `rule_files` was
+pointed at a local copy of `alert-rules.yml` and `credentials_file` at a dummy token file. Nothing else was changed:
+
+```sh
+docker run --rm -v "$PWD:/w" -w /w --entrypoint promtool prom/prometheus:latest check config prometheus.yml
+```
+
+```
+Checking prometheus.yml
+  SUCCESS: 1 rule files found
+ SUCCESS: prometheus.yml is valid prometheus config file syntax
+
+Checking alert-rules.yml
+  SUCCESS: 19 rules found
+```
+
+Run `promtool check config` again against YOUR real `prometheus.yml`: with the real paths in place it also verifies
+that `credentials_file` exists and is readable, which the rewritten copy above cannot.
+
+### 4.5 What section 4 did NOT verify
+
+- **Alert delivery to any destination.** Not tested, and not testable from here: no receiver exists, and no
+  external service was contacted. See section 5; the status stays "alert delivery UNVERIFIED".
+- That a real Prometheus can scrape the API at all (`METRICS_TOKEN`, `API_PRIVATE_HOSTS`, network path, the per-IP
+  rate limit in section 1). No API instance and no Prometheus server were run - only the offline `promtool`/`amtool`
+  checkers.
+- That `credentials_file` resolves in a real deployment (see 4.4).
+- Threshold calibration. promtool proves each rule fires on the synthetic series in `alert-rules.test.yml`; it
+  cannot say whether "> 20 denials in 10 m" is the right number for your traffic.
+- The inhibit rule's runtime effect. `check-config` parses it; suppression only happens in a running Alertmanager.
 
 ## 5. Safe delivery test (never touches the pager)
 

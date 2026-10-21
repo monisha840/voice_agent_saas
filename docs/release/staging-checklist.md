@@ -5,6 +5,23 @@ Prepared 2026-10-14. Sources: `docs/security/exotel-staging-test-plan.md`, `exot
 `migration-reconciliation.md`. Open policy questions are in [decisions.md](decisions.md); migration 0022 procedure is in
 [migration-review.md](migration-review.md).
 
+## Status update 2026-10-21 (read before interpreting any `NOT RUN` below)
+
+Three facts changed after this checklist was written. The item results below are unchanged - a result only moves
+with recorded evidence - but the reasons behind them are not what they were on 2026-10-14.
+
+1. **The Exotel block is fixed: a real inbound phone call now reaches the server.** Earlier text in this directory
+   implied Exotel connectivity itself was unproven. It is not. Every `EX-*` and `GR-*` item below is still
+   `NOT RUN` because none of them has a recorded evidence block, not because a call cannot get through. Do not
+   quote the `NOT RUN` results as "Exotel does not work".
+2. **The top external blocker is commercial: Exotel and Sarvam are not paid for at production level.** Section 1
+   (Exotel), section 3 (Sarvam) and the concurrency items in section 6 cannot be executed at production volume
+   until paid accounts and an agreed spend cap exist. Record that as the reason when an item is reported as
+   `BLOCKED` rather than leaving it as a bare `NOT RUN`.
+3. **The product supports three languages: Tamil, Tanglish and English.** Hindi is not supported. Item `SV-04`
+   (Hindi) has been removed from section 3 and its id is retired, not reused; section 3 is now six items
+   (`SV-00..SV-03`, `SV-05`, `SV-06`).
+
 ## Rules
 
 1. **Every item starts as `NOT RUN`. An item without evidence stays `NOT RUN`**, whatever the operator believes
@@ -283,8 +300,9 @@ record provider spend.
 - Pass: configuration and consent recorded.
 - Evidence: as block. Result: `NOT RUN`
 
-For SV-01..SV-04: **Env** staging over the real Exotel phone path (not studio audio); **Pre** SV-00, EX-19.
-**Steps**: scripted conversations by native speakers, >= 50 turns per language (>= 200 total). **Pass**: per-stage
+For SV-01..SV-03 (the three supported languages: Tamil, Tanglish, English): **Env** staging over the real Exotel
+phone path (not studio audio); **Pre** SV-00, EX-19.
+**Steps**: scripted conversations by native speakers, >= 50 turns per language (>= 150 total). **Pass**: per-stage
 p50/p95/p99 recorded for STT first transcript, LLM first token, TTS first byte, end-to-end turn gap; STT error and
 timeout rate recorded; p95 turn gap within the product budget (budget value: ______, to be set by product); transcript
 quality noted on a sample. **Evidence**: as block + metric table below. **Result**: `NOT RUN`.
@@ -294,9 +312,10 @@ quality noted on a sample. **Evidence**: as block + metric table below. **Result
 | SV-01 | Tamil | | | | | | | | NOT RUN |
 | SV-02 | Tanglish | | | | | | | | NOT RUN |
 | SV-03 | English | | | | | | | | NOT RUN |
-| SV-04 | Hindi | | | | | | | | NOT RUN |
 
-**SV-05 Provider 429/5xx and timeouts**
+(`SV-04` was a Hindi row. Removed 2026-10-21: the product supports three languages. The id is retired, not reused.)
+
+**SV-05 Provider 429/5xx and timeouts** (`SV-04` retired; see the note above)
 - Env: staging. Pre: SV-00.
 - Steps: induce provider errors (invalid key on a test call, rate burst within spend cap) and observe.
 - Pass: circuit breaker opens; caller hears a graceful fallback or clean end; call reaches a terminal status; no crash.
@@ -501,10 +520,10 @@ A section is signed only when every item in it is PASS (or an accepted FAIL/BLOC
 | 0 Prerequisites | ST-00 | 0 / 1 | | | | |
 | 1 Exotel dynamic endpoint and grants | EX-01..EX-21 | 0 / 21 | | | | |
 | 2 Missing/expired/replayed/forged grants | GR-01..GR-13 | 0 / 13 | | | | |
-| 3 Sarvam 8 kHz | SV-00..SV-06 | 0 / 7 | | | | |
+| 3 Sarvam 8 kHz | SV-00..SV-03, SV-05, SV-06 (SV-04 retired) | 0 / 6 | | | | |
 | 4 Barge-in | BI-01..BI-03 | 0 / 3 | | | | |
 | 5 Disconnects/reconnects | DC-01..DC-05 | 0 / 5 | | | | |
 | 6 Concurrency | CC-01..CC-04 | 0 / 4 | | | | |
 | 7 Managed PostgreSQL | PG-01..PG-08 | 0 / 8 | | | | |
 | 8 Metrics and alert delivery | MA-01..MA-08 | 0 / 8 | | | | |
-| **Release owner (overall)** | all | 0 / 70 | | | | |
+| **Release owner (overall)** | all | 0 / 69 | | | | |
