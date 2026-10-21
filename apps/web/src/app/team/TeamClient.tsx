@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Check, Copy, UserPlus } from "lucide-react";
 import { api } from "@/lib/api";
 import { can, canManageMember, grantableRoles } from "@/lib/permissions";
-import type { Invitation, Role, TeamMember } from "@/lib/types";
+import type { Invitation, InvitationDelivery, Role, TeamMember } from "@/lib/types";
 import { Badge, Button, Card, Field, Notice, errorMessage, inputClass } from "@/components/ui";
 
 export function TeamClient({
@@ -164,6 +164,7 @@ function InviteCard({ role, onInvited }: { role: Role | null; onInvited: (inv: I
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [link, setLink] = useState<string | null>(null);
+  const [delivery, setDelivery] = useState<InvitationDelivery | null>(null);
   const [copied, setCopied] = useState(false);
 
   async function submit(e: React.FormEvent) {
@@ -171,11 +172,14 @@ function InviteCard({ role, onInvited }: { role: Role | null; onInvited: (inv: I
     setBusy(true);
     setError(null);
     setLink(null);
+    setDelivery(null);
     setCopied(false);
     try {
       const res = await api.inviteUser(email.trim(), inviteRole);
-      // The token is only returned once, so build the shareable link now.
-      setLink(`${window.location.origin}${res.acceptPath}`);
+      // With an email provider configured the token is emailed and never returned here; `inviteUrl` is present
+      // (and already absolute) only when delivery is "not-configured".
+      setDelivery(res.delivery);
+      setLink(res.inviteUrl ?? null);
       onInvited(res.invitation);
       setEmail("");
     } catch (err) {
@@ -220,11 +224,25 @@ function InviteCard({ role, onInvited }: { role: Role | null; onInvited: (inv: I
           <Notice tone="error">{error}</Notice>
         </div>
       )}
-      {link && (
+      {delivery === "sent" && (
+        <div className="mt-3">
+          <Notice tone="success">Invitation emailed. They have 7 days to accept it.</Notice>
+        </div>
+      )}
+      {delivery === "failed" && (
+        <div className="mt-3">
+          <Notice tone="error">
+            The invitation was created but we could not email it. Use Resend to try again — the old link stops working
+            when you do.
+          </Notice>
+        </div>
+      )}
+      {delivery === "not-configured" && link && (
         <div className="mt-4 rounded-md border border-emerald-200 bg-emerald-50 p-4">
           <div className="text-sm font-medium text-emerald-900">Invitation link created</div>
           <p className="mt-1 text-xs text-emerald-800">
-            This link is shown only once, and no email is sent. Copy it and send it to the invitee yourself.
+            No email provider is configured, so nothing was sent. This link is shown only once — copy it and send it to
+            the invitee yourself.
           </p>
           <div className="mt-3 flex gap-2">
             <input readOnly value={link} onFocus={(e) => e.target.select()} className={`${inputClass} font-mono text-xs`} />

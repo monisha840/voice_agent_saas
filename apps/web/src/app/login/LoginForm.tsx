@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { api, ApiError } from "@/lib/api";
 
@@ -132,7 +133,18 @@ export function LoginForm({ next }: { next: string }) {
           />
         </label>
         <label className="block text-sm">
-          <span className="mb-1 block font-medium text-stone-700">Password</span>
+          <div className="mb-1 flex items-baseline justify-between gap-2">
+            <span className="font-medium text-stone-700">Password</span>
+            {/* The only way back in for a locked-out customer. Carries the address already typed, so the reset
+                page does not ask for it twice; it reveals nothing, since that page answers identically for every
+                address. */}
+            <Link
+              href={email.trim() ? `/forgot-password?email=${encodeURIComponent(email.trim())}` : "/forgot-password"}
+              className="text-xs text-stone-500 underline hover:text-stone-700"
+            >
+              Forgot your password?
+            </Link>
+          </div>
           <input
             type="password"
             required

@@ -22,6 +22,7 @@ import type {
   FollowUp,
   FollowUpQueueItem,
   Invitation,
+  IssuedInvitation,
   KnowledgeCategory,
   KnowledgeDraft,
   UnansweredQuestion,
@@ -98,6 +99,13 @@ export interface MfaStatus {
   enrolledAt: string | null;
   recoveryCodesRemaining: number;
   enforcement: "off" | "warn" | "enforce";
+}
+
+/** Whether the signed-in user has confirmed their own e-mail address (GET /api/auth/email-verification). */
+export interface EmailVerificationStatus {
+  email: string;
+  verified: boolean;
+  verifiedAt: string | null;
 }
 
 export interface AuthUser {
@@ -282,6 +290,26 @@ export function createApi(getExtraHeaders: HeaderProvider = () => ({})) {
     acceptInvite: (token: string, name: string, password: string) =>
       send<AuthUser>("POST", "/api/auth/accept-invite", { token, name, password }),
 
+    // --- account recovery (public: no session needed) ---
+    /**
+     * Starts a password reset. Always resolves - the API answers identically whether or not the address exists, so
+     * the UI must never try to tell the two apart or report "no such account".
+     */
+    forgotPassword: (email: string) => send<{ ok: true }>("POST", "/api/auth/forgot-password", { email }),
+    /** Finishes a reset. Signs the user in; `mfaRequired` means the second-factor step still has to be passed. */
+    resetPassword: (token: string, password: string) =>
+      send<{ id: string; email: string; name: string; mfaRequired: boolean; sessionsRevoked: number }>(
+        "POST",
+        "/api/auth/reset-password",
+        { token, password },
+      ),
+    confirmEmailVerification: (token: string) =>
+      send<{ ok: true; email: string; alreadyVerified: boolean }>("POST", "/api/auth/email-verification/confirm", { token }),
+    // --- e-mail verification (authenticated: always the caller's own address) ---
+    emailVerificationStatus: () => request<EmailVerificationStatus>("/api/auth/email-verification"),
+    sendEmailVerification: () =>
+      send<{ ok: true; email: string; alreadyVerified: boolean }>("POST", "/api/auth/email-verification/send"),
+
     // --- organization ---
     getOrganization: () => request<{ id: string; name: string }>("/api/organization"),
     renameOrganization: (name: string) => send<{ id: string; name: string }>("PATCH", "/api/organization", { name }),
@@ -322,11 +350,13 @@ export function createApi(getExtraHeaders: HeaderProvider = () => ({})) {
 
     // --- team ---
     listUsers: () => request<TeamMember[]>("/api/users"),
+    // `inviteUrl` is present ONLY when no email provider is configured (EMAIL_PROVIDER=mock), i.e. when nothing was
+    // delivered and the link has to be handed over by the admin. With a real provider the token never leaves the
+    // server outside the message body, so do not expect a link back here.
     inviteUser: (email: string, role: Role) =>
-      send<{ invitation: Invitation; inviteToken: string; acceptPath: string }>("POST", "/api/users/invitations", {
-        email,
-        role,
-      }),
+      send<IssuedInvitation>("POST", "/api/users/invitations", { email, role }),
+    resendInvitation: (id: string) =>
+      send<IssuedInvitation>("POST", `/api/users/invitations/${id}/resend`, {}),
     listInvitations: () => request<Invitation[]>("/api/users/invitations"),
     revokeInvitation: (id: string) => send<unknown>("DELETE", `/api/users/invitations/${id}`),
     changeRole: (userId: string, role: Role) => send<unknown>("PATCH", `/api/users/${userId}/role`, { role }),

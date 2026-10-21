@@ -14,7 +14,12 @@ export function AcceptInviteForm({ token }: { token: string }) {
   const [busy, setBusy] = useState(false);
 
   if (!token) {
-    return <Notice tone="error">This invitation link is missing its token. Ask your admin for a new link.</Notice>;
+    return (
+      <Notice tone="error">
+        This invitation link is incomplete — some mail clients cut long links. Open the link in your invitation email again, or ask an
+        admin to resend the invitation.
+      </Notice>
+    );
   }
 
   async function submit(e: React.FormEvent) {
@@ -28,7 +33,12 @@ export function AcceptInviteForm({ token }: { token: string }) {
       router.push("/");
       router.refresh();
     } catch (err) {
-      setError(errorMessage(err));
+      const message = errorMessage(err);
+      // The API answers identically for an unknown, used, revoked or expired token (deliberately: a caller must not
+      // be able to probe which tokens exist), so the page adds the one next step that fits all of them and nothing
+      // that would distinguish them. An invitation lasts 7 days, so expiry is the likeliest of the four.
+      const expired = /invalid or expired invitation/i.test(message);
+      setError(expired ? `${message}. Ask an admin to resend your invitation.` : message);
       setBusy(false);
     }
   }

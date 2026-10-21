@@ -187,6 +187,19 @@ export interface Invitation {
   expiresAt: string;
 }
 
+/** Whether the invitation email actually left the server. "not-configured" means no email provider is set up. */
+export type InvitationDelivery = "sent" | "failed" | "not-configured";
+
+/**
+ * The result of issuing or resending an invitation. `inviteUrl` is an ABSOLUTE url and is present only when
+ * `delivery` is "not-configured" — with a real provider the token is emailed and never returned here.
+ */
+export interface IssuedInvitation {
+  invitation: Invitation;
+  delivery: InvitationDelivery;
+  inviteUrl?: string;
+}
+
 export interface ProjectMember {
   userId: string;
   name: string;

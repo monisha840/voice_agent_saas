@@ -5,10 +5,11 @@ process.env.AI_PROVIDER = "mock";
 process.env.TELEPHONY_PROVIDER = "mock";
 
 import { buildApp } from "../../app.js";
+import { clearSentEmails, sentEmailsTo, setEmailSender, type EmailMessage, type IEmailSender } from "../../adapters/email/index.js";
 import { adminDb as db } from "../../db/client.js";
-import { auditLogs, invitations, leads, memberships, projectMembers, sessions, users } from "../../db/schema.js";
+import { auditLogs, invitations, leads, memberships, projectMembers, sessions, subscriptions, users } from "../../db/schema.js";
 import { systemContext } from "../../auth/context.js";
-import { verifyPassword } from "../../auth/password.js";
+import { hashPassword, verifyPassword } from "../../auth/password.js";
 import { cleanupTenants, createMember, createTenant, loginCookie, TEST_PASSWORD, type TestTenant } from "../../test/tenants.js";
 import { hashInviteToken, usersService } from "./users.service.js";
 
@@ -46,11 +47,51 @@ async function accept(body: Record<string, unknown>, ip = `10.1.${Math.floor(++i
   return { status: res.statusCode, body: res.json() as { data?: { id: string; email: string; name: string }; error?: string }, cookie: cookie ? `va_session=${cookie.value}` : "" };
 }
 
+async function resend(cookie: string, invitationId: string) {
+  return http(cookie, `/api/users/invitations/${invitationId}/resend`, { method: "POST", body: json({}) });
+}
+
+const tokenFrom = (url: string) => new URL(url).searchParams.get("token") ?? "";
+/** The accept link as it appears in a plain-text body (the URL must stand on its own there). */
+const linkIn = (text: string) => text.match(/https?:\/\/\S*\/accept-invite\?token=[A-Za-z0-9_-]+/)?.[0] ?? "";
+
+/**
+ * A stand-in for a deployment with real credentials. The default sender is the mock one, which never claims a
+ * delivery, so this is the only way to exercise what happens when a provider accepts a message - or goes down.
+ */
+function stubSender(opts: { fail?: Error; accept?: boolean } = {}): IEmailSender & { sent: EmailMessage[] } {
+  const sent: EmailMessage[] = [];
+  return {
+    name: "resend",
+    sent,
+    async send(message: EmailMessage) {
+      if (opts.fail) throw opts.fail;
+      sent.push(message);
+      return { providerMessageId: "stub-message-id", accepted: opts.accept ?? true };
+    },
+  };
+}
+
+/** Runs one action with that sender installed, and always puts the configured one back. */
+async function withSender<T>(sender: IEmailSender, action: () => Promise<T>): Promise<T> {
+  setEmailSender(sender);
+  try {
+    return await action();
+  } finally {
+    setEmailSender(null);
+  }
+}
+
+/**
+ * The invitee's token. It is NOT in the response in general: it comes back as `inviteUrl` only because no email
+ * provider is configured in tests, which is the one case where nothing was actually delivered.
+ */
 async function newInvite(email: string, role: Role, cookie = cookies.OWNER) {
   createdEmails.push(email);
   const res = await invite(cookie, email, role);
   expect(res.status).toBe(201);
-  return { token: res.body.data.inviteToken as string, id: res.body.data.invitation.id as string };
+  expect(res.body.data.delivery).toBe("not-configured");
+  return { token: tokenFrom(res.body.data.inviteUrl as string), id: res.body.data.invitation.id as string };
 }
 
 beforeAll(async () => {
@@ -73,6 +114,9 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await app.close();
+  // The mock outbox holds real (if unused) invite tokens: do not leave them in the process.
+  setEmailSender(null);
+  clearSentEmails();
   await db.delete(auditLogs).where(inArray(auditLogs.organizationId, [A.orgId, B.orgId]));
   await db.delete(projectMembers).where(inArray(projectMembers.organizationId, [A.orgId, B.orgId]));
   await db.delete(invitations).where(inArray(invitations.organizationId, [A.orgId, B.orgId]));
@@ -99,30 +143,43 @@ describe("GET /api/users", () => {
 });
 
 describe("POST /api/users/invitations", () => {
-  it("creates an invitation, returns the token once, and stores only its hash", async () => {
+  it("creates an invitation and stores only the hash of its token", async () => {
     const email = `Newbie-${uniq()}@Example.test`;
     const res = await invite(cookies.OWNER, email, "AGENT");
     expect(res.status).toBe(201);
-    const { invitation, inviteToken, acceptPath } = res.body.data;
+    const { invitation, delivery, inviteUrl } = res.body.data;
     expect(invitation).toMatchObject({ email: email.toLowerCase(), role: "AGENT" });
     expect(Object.keys(invitation).sort()).toEqual(["email", "expiresAt", "id", "role"]);
-    expect(inviteToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    expect(acceptPath).toBe(`/accept-invite?token=${inviteToken}`);
+    expect(delivery).toBe("not-configured");
+    const token = tokenFrom(inviteUrl);
+    expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(new URL(inviteUrl).pathname).toBe("/accept-invite");
     const days = (new Date(invitation.expiresAt).getTime() - Date.now()) / 86_400_000;
     expect(days).toBeGreaterThan(6.9);
     expect(days).toBeLessThan(7.1);
 
     const [row] = await db.select().from(invitations).where(eq(invitations.id, invitation.id));
-    expect(row.tokenHash).toBe(hashInviteToken(inviteToken));
-    expect(JSON.stringify(row)).not.toContain(inviteToken);
+    expect(row.tokenHash).toBe(hashInviteToken(token));
+    expect(JSON.stringify(row)).not.toContain(token);
     expect(row.invitedByUserId).toBe(A.userId);
 
     // The token is never shown again.
     const list = await http(cookies.OWNER, "/api/users/invitations");
-    expect(list.text).not.toContain(inviteToken);
+    expect(list.text).not.toContain(token);
     expect(list.text).not.toContain(row.tokenHash);
     expect(list.text).not.toMatch(/token/i);
     createdEmails.push(email.toLowerCase());
+  });
+
+  it("never returns a raw token field; the link is in the body only because no provider is configured", async () => {
+    const email = `shape-${uniq()}@example.test`;
+    createdEmails.push(email);
+    const res = await invite(cookies.OWNER, email, "AGENT");
+    expect(res.status).toBe(201);
+    expect(Object.keys(res.body.data).sort()).toEqual(["delivery", "invitation", "inviteUrl"]);
+    expect(res.body.data).not.toHaveProperty("inviteToken");
+    expect(res.body.data).not.toHaveProperty("acceptPath");
+    expect(res.body.data.inviteUrl).toMatch(/^https?:\/\/.+\/accept-invite\?token=[A-Za-z0-9_-]{43}$/);
   });
 
   it("validates the body", async () => {
@@ -161,8 +218,225 @@ describe("POST /api/users/invitations", () => {
     const rows = await db.select().from(auditLogs).where(and(eq(auditLogs.organizationId, A.orgId), eq(auditLogs.entityId, id)));
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ action: "user.invited", actorUserId: A.userId, entityType: "invitation" });
-    expect(rows[0].metadata).toEqual({ email, role: "AGENT" });
+    expect(rows[0].metadata).toEqual({ email, role: "AGENT", delivery: "not-configured" });
     expect(JSON.stringify(rows[0])).not.toContain(token);
+  });
+});
+
+describe("the invitation email", () => {
+  it("reaches the invitee with the accept link, the inviter, the organization, the role and the expiry", async () => {
+    clearSentEmails();
+    const email = `mailed-${uniq()}@example.test`;
+    createdEmails.push(email);
+    const res = await invite(cookies.OWNER, email, "MANAGER");
+    expect(res.status).toBe(201);
+
+    const recorded = sentEmailsTo(email);
+    expect(recorded).toHaveLength(1);
+    const msg = recorded[0].message;
+    expect(msg.to.email).toBe(email);
+    expect(msg.kind).toBe("invite");
+    // The idempotency key is derived from the invitation row, never from the token.
+    expect(msg.idempotencyKey).toBe(`invite:${res.body.data.invitation.id}`);
+    expect(msg.subject).toContain("Tenant A");
+    expect(msg.subject).not.toMatch(/[A-Za-z0-9_-]{43}/);
+
+    // The plain-text body stands on its own: the absolute link is in it, built from APP_BASE_URL.
+    const link = linkIn(msg.text);
+    expect(link).toBe(res.body.data.inviteUrl);
+    expect(msg.text).toContain("Tenant A"); // the organization
+    expect(msg.text).toContain("owner-a user"); // who invited them
+    expect(msg.text).toMatch(/manager/i); // the role
+    expect(msg.text).toContain(new Date(res.body.data.invitation.expiresAt).toISOString().slice(0, 10)); // the expiry
+    expect(msg.html).toContain(link);
+
+    // The link in the email is the credential, and it works.
+    expect((await accept({ token: tokenFrom(link), name: "Mailed Person", password: "long-enough-password" })).status).toBe(200);
+  });
+
+  it("with a provider configured the link is emailed and NEVER returned in the response", async () => {
+    const sender = stubSender();
+    const email = `real-${uniq()}@example.test`;
+    createdEmails.push(email);
+    const res = await withSender(sender, () => invite(cookies.OWNER, email, "AGENT"));
+    expect(res.status).toBe(201);
+    expect(res.body.data.delivery).toBe("sent");
+    // The whole point: no credential in the API response once a real send happened.
+    expect(Object.keys(res.body.data).sort()).toEqual(["delivery", "invitation"]);
+    expect(res.text).not.toMatch(/token|inviteUrl|acceptPath/i);
+
+    // The token left the server only inside the message body - and it is the real one.
+    expect(sender.sent).toHaveLength(1);
+    const token = tokenFrom(linkIn(sender.sent[0].text));
+    const [row] = await db.select().from(invitations).where(eq(invitations.id, res.body.data.invitation.id));
+    expect(row.tokenHash).toBe(hashInviteToken(token));
+    expect(sender.sent[0].idempotencyKey).not.toContain(token);
+
+    const audit = await db.select().from(auditLogs).where(and(eq(auditLogs.entityId, row.id), eq(auditLogs.action, "user.invited")));
+    expect(audit[0].metadata).toEqual({ email, role: "AGENT", delivery: "sent" });
+    expect((await accept({ token, name: "Real Person", password: "long-enough-password" })).status).toBe(200);
+  });
+
+  it("a provider outage does not fail or roll back the invitation, withholds the link, and shows up in the audit trail", async () => {
+    const email = `outage-${uniq()}@example.test`;
+    createdEmails.push(email);
+    const res = await withSender(stubSender({ fail: new Error("smtp: connection refused") }), () =>
+      invite(cookies.OWNER, email, "AGENT"),
+    );
+    expect(res.status).toBe(201);
+    expect(res.body.data.delivery).toBe("failed");
+    // A send was attempted, so no credential comes back: the recovery path is the resend endpoint.
+    expect(Object.keys(res.body.data).sort()).toEqual(["delivery", "invitation"]);
+    expect(res.text).not.toMatch(/token|inviteUrl|acceptPath/i);
+
+    // The row and the seat it holds survived the failure.
+    const [row] = await db.select().from(invitations).where(eq(invitations.id, res.body.data.invitation.id));
+    expect(row.revokedAt).toBeNull();
+    expect(row.acceptedAt).toBeNull();
+    const pending = (await http(cookies.OWNER, "/api/users/invitations")).body.data as Array<{ id: string }>;
+    expect(pending.map((p) => p.id)).toContain(row.id);
+
+    const audit = await db.select().from(auditLogs).where(and(eq(auditLogs.entityId, row.id), eq(auditLogs.action, "user.invited")));
+    expect(audit).toHaveLength(1);
+    expect(audit[0].metadata).toEqual({ email, role: "AGENT", delivery: "failed" });
+    expect(JSON.stringify(audit[0])).not.toContain(row.tokenHash);
+  });
+
+  it("a provider that refuses the message is reported as failed too", async () => {
+    const email = `refused-${uniq()}@example.test`;
+    createdEmails.push(email);
+    const res = await withSender(stubSender({ accept: false }), () => invite(cookies.OWNER, email, "AGENT"));
+    expect(res.status).toBe(201);
+    expect(res.body.data.delivery).toBe("failed");
+    expect(res.body.data).not.toHaveProperty("inviteUrl");
+  });
+
+  it("a failed send is not a way to probe which addresses exist: the answer is the same either way", async () => {
+    const outage = stubSender({ fail: new Error("smtp: connection refused") });
+    const unknown = `nobody-${uniq()}@example.test`;
+    const existing = await createMember(B.orgId, "AGENT", "probe"); // a real account, in another organization
+    createdEmails.push(unknown);
+    const results = await withSender(outage, async () => [
+      await invite(cookies.OWNER, unknown, "AGENT"),
+      await invite(cookies.OWNER, existing.email, "AGENT"),
+    ]);
+    for (const r of results) {
+      expect(r.status).toBe(201);
+      expect(Object.keys(r.body.data).sort()).toEqual(["delivery", "invitation"]);
+      expect(r.body.data.delivery).toBe("failed");
+    }
+  });
+});
+
+describe("POST /api/users/invitations/:id/resend", () => {
+  it("issues a FRESH token, emails it, kills the previous link, and audits the replacement", async () => {
+    clearSentEmails();
+    const email = `resend-${uniq()}@example.test`;
+    const first = await newInvite(email, "AGENT");
+    expect(sentEmailsTo(email)).toHaveLength(1);
+
+    const res = await resend(cookies.OWNER, first.id);
+    expect(res.status).toBe(201);
+    const second = { id: res.body.data.invitation.id as string, token: tokenFrom(res.body.data.inviteUrl as string) };
+    expect(second.id).not.toBe(first.id);
+    expect(second.token).not.toBe(first.token);
+    expect(second.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+
+    // Two messages, not one: the idempotency key is per invitation row, so a resend cannot be collapsed into the
+    // first send by the provider (or by the mock) and silently deliver nothing.
+    const mailed = sentEmailsTo(email);
+    expect(mailed).toHaveLength(2);
+    expect(mailed[1].message.idempotencyKey).toBe(`invite:${second.id}`);
+    expect(mailed[1].message.idempotencyKey).not.toBe(mailed[0].message.idempotencyKey);
+    expect(tokenFrom(linkIn(mailed[1].message.text))).toBe(second.token);
+    expect(mailed[1].message.text).not.toContain(first.token);
+
+    // The replaced invitation is gone from the pending list - the seat it held was released.
+    const pending = (await http(cookies.OWNER, "/api/users/invitations")).body.data as Array<{ id: string; email: string }>;
+    expect(pending.filter((p) => p.email === email).map((p) => p.id)).toEqual([second.id]);
+
+    const audit = await db.select().from(auditLogs).where(and(eq(auditLogs.entityId, second.id), eq(auditLogs.action, "user.invitation_resent")));
+    expect(audit).toHaveLength(1);
+    expect(audit[0].metadata).toEqual({ email, role: "AGENT", delivery: "not-configured", replaces: first.id });
+    expect(JSON.stringify(audit[0])).not.toContain(second.token);
+
+    expect((await accept({ token: first.token, name: "Old", password: "long-enough-password" })).status).toBe(400);
+    expect((await accept({ token: second.token, name: "New", password: "long-enough-password" })).status).toBe(200);
+  });
+
+  it("an expired invitation is resendable - that is the recovery path - and comes back with a new expiry", async () => {
+    const email = `rx-${uniq()}@example.test`;
+    const stale = await newInvite(email, "AGENT");
+    await db.update(invitations).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(invitations.id, stale.id));
+    const res = await resend(cookies.OWNER, stale.id);
+    expect(res.status).toBe(201);
+    const days = (new Date(res.body.data.invitation.expiresAt).getTime() - Date.now()) / 86_400_000;
+    expect(days).toBeGreaterThan(6.9);
+    expect((await accept({ token: tokenFrom(res.body.data.inviteUrl), name: "Renewed", password: "long-enough-password" })).status).toBe(200);
+  });
+
+  it("an accepted or revoked invitation cannot be resent (404), nor can another tenant's", async () => {
+    const used = await newInvite(`ru-${uniq()}@example.test`, "AGENT");
+    expect((await accept({ token: used.token, name: "U", password: "long-enough-password" })).status).toBe(200);
+    expect((await resend(cookies.OWNER, used.id)).status).toBe(404);
+
+    const revoked = await newInvite(`rr-${uniq()}@example.test`, "AGENT");
+    expect((await http(cookies.OWNER, `/api/users/invitations/${revoked.id}`, { method: "DELETE" })).status).toBe(200);
+    expect((await resend(cookies.OWNER, revoked.id)).status).toBe(404);
+
+    const mine = await newInvite(`rm-${uniq()}@example.test`, "AGENT");
+    expect((await resend(cookieB, mine.id)).status).toBe(404);
+    expect((await resend(cookies.OWNER, "not-a-uuid")).status).toBe(400);
+    // B's attempt did nothing: the invitation is still usable.
+    expect((await accept({ token: mine.token, name: "Iso", password: "long-enough-password" })).status).toBe(200);
+  });
+
+  it("only OWNER/ADMIN may resend, and the role hierarchy is re-checked against the invitation's role", async () => {
+    const forOwner = await newInvite(`rh-${uniq()}@example.test`, "OWNER");
+    expect((await resend(cookies.ADMIN, forOwner.id)).status).toBe(403);
+    expect((await resend(cookies.OWNER, forOwner.id)).status).toBe(201);
+    const forAgent = await newInvite(`rh2-${uniq()}@example.test`, "AGENT");
+    for (const role of ["MANAGER", "AGENT"] as const) {
+      expect((await resend(cookies[role], forAgent.id)).status).toBe(403);
+    }
+  });
+
+  it("refuses (409) when the address has become a member since the invitation was issued", async () => {
+    const email = `rc-${uniq()}@example.test`;
+    const pending = await newInvite(email, "AGENT");
+    // The race: they joined through another route after this invitation was issued.
+    const [joined] = await db.insert(users).values({ email, name: "Raced", passwordHash: await hashPassword(TEST_PASSWORD) }).returning();
+    await db.insert(memberships).values({ organizationId: A.orgId, userId: joined.id, role: "AGENT" });
+    expect((await resend(cookies.OWNER, pending.id)).status).toBe(409);
+  });
+
+  it("is seat-neutral: a resend fits a plan that is already full, a new address does not", async () => {
+    const C = await createTenant("INVCAP", { modules: [] });
+    const day = 86_400_000;
+    await db.insert(subscriptions).values({
+      organizationId: C.orgId,
+      planKey: "starter",
+      status: "active",
+      limitOverrides: { maxTeamMembers: 2 },
+      currentPeriodStart: new Date(Date.now() - 5 * day),
+      currentPeriodEnd: new Date(Date.now() + 25 * day),
+    });
+    const cookieC = await loginCookie(baseUrl, C.email);
+    const email = `cap-${uniq()}@example.test`;
+    createdEmails.push(email);
+
+    // C's owner + one pending invitation = the cap of 2.
+    const first = await invite(cookieC, email, "AGENT");
+    expect(first.status).toBe(201);
+    const extra = await invite(cookieC, `cap2-${uniq()}@example.test`, "AGENT");
+    expect(extra.status).toBe(429);
+    expect(extra.body.code).toBe("TEAM_MEMBER_LIMIT_REACHED");
+
+    // Resending revokes the pending row before inserting the new one, so the seat count never rises.
+    const again = await resend(cookieC, first.body.data.invitation.id);
+    expect(again.status).toBe(201);
+    expect((await http(cookieC, "/api/users/invitations")).body.data).toHaveLength(1);
+    expect((await invite(cookieC, `cap3-${uniq()}@example.test`, "AGENT")).status).toBe(429);
   });
 });
 

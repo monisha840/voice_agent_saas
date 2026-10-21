@@ -176,6 +176,13 @@
       "when": 1792564599222,
       "tag": "0025_drop_unenforced_entitlements",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1792566522156,
+      "tag": "0026_account_recovery",
+      "breakpoints": true
     }
   ]
 }

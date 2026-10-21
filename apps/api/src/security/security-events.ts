@@ -23,6 +23,16 @@ export type SecurityEventType =
   | "auth.logout"
   | "auth.password.changed"
   | "auth.password.rejected"
+  // Customer-facing password reset (modules/auth/account-recovery.ts). "reset_requested" is recorded for an unknown
+  // or deactivated address too (outcome "info", metadata.delivered = false) so the trail shows the attempt without
+  // the endpoint's answer ever differing.
+  | "auth.password.reset_requested"
+  | "auth.password.reset_completed"
+  | "auth.password.reset_failed"
+  // E-mail verification. "verification_failed" covers every unusable token, which the caller cannot tell apart.
+  | "auth.email.verification_sent"
+  | "auth.email.verified"
+  | "auth.email.verification_failed"
   | "auth.reauthenticated"
   | "auth.reauthentication.failed"
   | "auth.mfa.enrollment_started"

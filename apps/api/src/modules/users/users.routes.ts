@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { requireContext } from "../../auth/auth.plugin.js";
+import { routeRateLimit } from "../../security/rate-limits.js";
 import { parseInput } from "../../shared/validation.js";
 import { usersService } from "./users.service.js";
 
@@ -24,6 +25,27 @@ export async function usersRoutes(app: FastifyInstance) {
   app.get("/api/users/invitations", async (req, reply) => {
     return reply.send({ data: await usersService.listInvitations(requireContext(req)) });
   });
+
+  /**
+   * Recovery path for a failed or lost invitation email. Rate limited per organization because, unlike the other
+   * routes here, an authenticated admin can use it to make the server send mail to an address repeatedly.
+   */
+  app.post<{ Params: { id: string } }>(
+    "/api/users/invitations/:id/resend",
+    {
+      preHandler: routeRateLimit({
+        name: "invite-resend",
+        max: 30,
+        windowMs: 60 * 60_000,
+        key: (req) => req.ctx?.organizationId ?? req.ip,
+      }),
+    },
+    async (req, reply) => {
+      const { id } = parseInput(invitationIdParams, req.params);
+      const data = await usersService.resendInvitation(requireContext(req), { invitationId: id });
+      return reply.status(201).send({ data });
+    },
+  );
 
   app.delete<{ Params: { id: string } }>("/api/users/invitations/:id", async (req, reply) => {
     const { id } = parseInput(invitationIdParams, req.params);

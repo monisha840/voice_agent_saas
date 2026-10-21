@@ -14,6 +14,8 @@ import { loginThrottle } from "../../auth/login-throttle.js";
 import { parseInput } from "../../shared/validation.js";
 import { usersService } from "../users/users.service.js";
 import { modulesService } from "../modules/modules.service.js";
+import { accountRecovery } from "./account-recovery.js";
+import { MAX_PASSWORD_LENGTH } from "../../auth/password-policy.js";
 
 const loginBody = z.object({
   email: z.email().max(320),
@@ -28,6 +30,17 @@ const acceptInviteBody = z.object({
   name: z.string().trim().min(1).max(200),
   password: z.string().min(10).max(128),
 });
+
+const forgotPasswordBody = z.object({ email: z.email().max(320) });
+
+const resetPasswordBody = z.object({
+  token: z.string().min(1).max(200),
+  // Bounded generously and judged by checkPassword, so a too-short password gets the policy's message rather than
+  // a schema error - the same arrangement /change-password uses.
+  password: z.string().min(1).max(MAX_PASSWORD_LENGTH + 128),
+});
+
+const accountTokenBody = z.object({ token: z.string().min(1).max(200) });
 
 const GENERIC_LOGIN_ERROR = "Invalid email or password";
 
@@ -153,6 +166,98 @@ export async function authRoutes(app: FastifyInstance) {
       await securityEvents.record({ type: mfaPending ? "auth.login.mfa_required" : "auth.login.success", outcome: mfaPending ? "info" : "success", userId: user.id, organizationId, ip: req.ip, userAgent: req.headers["user-agent"], metadata: { via: "invitation" } });
       setSessionCookie(reply, token, expiresAt);
       return reply.send({ data: { id: user.id, email: user.email, name: user.name, mfaRequired: mfaPending } });
+    },
+  );
+
+  /**
+   * PUBLIC: start a password reset. ALWAYS 200 { ok: true } - for a real address, a non-existent one, a
+   * deactivated account and a failed send alike. This endpoint is the product's only account-enumeration risk, so
+   * every channel is closed deliberately: the status and body never vary (there is no branch that can answer
+   * otherwise), the provider send is dispatched but not awaited, and the unknown-address path performs equivalent
+   * work instead of returning early, so the latency class matches (see account-recovery.ts).
+   *
+   * Throttled on TWO keys, because the abuse shapes differ:
+   *   per IP     bounds a sweep over many addresses from one source (an enumeration attempt);
+   *   per address bounds mail-bombing one victim's inbox from many sources.
+   * Neither is an existence oracle: both count only what the caller itself submitted. Both fail CLOSED
+   * (routeRateLimit), so a counter-store outage cannot turn the limits off.
+   */
+  app.post(
+    "/api/auth/forgot-password",
+    {
+      preHandler: [
+        routeRateLimit({ name: "forgot-password-ip", max: 10, windowMs: 15 * 60_000, key: (req) => req.ip }),
+        routeRateLimit({
+          name: "forgot-password-address",
+          max: 3,
+          windowMs: 15 * 60_000,
+          key: (req) => String((req.body as { email?: unknown } | undefined)?.email ?? "").slice(0, 320).trim().toLowerCase(),
+        }),
+      ],
+    },
+    async (req, reply) => {
+      const { email } = parseInput(forgotPasswordBody, req.body);
+      await accountRecovery.requestPasswordReset({ email }, { ip: req.ip, userAgent: req.headers["user-agent"] });
+      // One fixed answer. Nothing above can change it.
+      return reply.send({ data: { ok: true } });
+    },
+  );
+
+  /**
+   * PUBLIC: finish a password reset. Rate limited per IP, NOT per token - keying on the credential would let an
+   * attacker rotate guesses past the limit (the same reasoning as /accept-invite).
+   *
+   * A completed reset revokes every session, then issues a fresh one. If the account has MFA, that session is
+   * created mfaPending exactly as a login's would be: a reset proves control of the MAILBOX, and MFA exists to
+   * survive a compromised password or mailbox. Letting a reset mint a verified session would turn inbox access
+   * into a complete second-factor bypass. The caller gets mfaRequired: true and can only reach /mfa/verify,
+   * /logout and /me until they produce a TOTP code or a recovery code; losing both remains an operator action
+   * (auth.mfa.reset_by_operator), which is the deliberate, auditable path.
+   */
+  app.post(
+    "/api/auth/reset-password",
+    { preHandler: routeRateLimit({ name: "reset-password", max: 10, windowMs: 15 * 60_000, key: (req) => req.ip }) },
+    async (req, reply) => {
+      const body = parseInput(resetPasswordBody, req.body);
+      const { user, sessionsRevoked, mfaRequired } = await accountRecovery.completePasswordReset(body, {
+        ip: req.ip,
+        userAgent: req.headers["user-agent"],
+      });
+      const orgs = await membershipsRepository.listForUser({ userId: user.id });
+      const { token, expiresAt } = await sessionService.create({
+        userId: user.id,
+        activeOrganizationId: orgs[0]?.organizationId ?? null,
+        ipAddress: req.ip,
+        userAgent: req.headers["user-agent"],
+        mfaPending: mfaRequired,
+      });
+      await securityEvents.record({
+        type: mfaRequired ? "auth.login.mfa_required" : "auth.login.success",
+        outcome: mfaRequired ? "info" : "success",
+        userId: user.id,
+        organizationId: orgs[0]?.organizationId ?? null,
+        ip: req.ip,
+        userAgent: req.headers["user-agent"],
+        metadata: { via: "password_reset" },
+      });
+      setSessionCookie(reply, token, expiresAt);
+      return reply.send({
+        data: { id: user.id, email: user.email, name: user.name, mfaRequired, sessionsRevoked },
+      });
+    },
+  );
+
+  /**
+   * PUBLIC: confirm an e-mail address (the token is the credential). Per-IP limit, same reasoning as above.
+   * Single-use: a replayed link gets the same message as an unknown one.
+   */
+  app.post(
+    "/api/auth/email-verification/confirm",
+    { preHandler: routeRateLimit({ name: "email-verification-confirm", max: 10, windowMs: 15 * 60_000, key: (req) => req.ip }) },
+    async (req, reply) => {
+      const body = parseInput(accountTokenBody, req.body);
+      const result = await accountRecovery.confirmEmailVerification(body, { ip: req.ip, userAgent: req.headers["user-agent"] });
+      return reply.send({ data: { ok: true, ...result } });
     },
   );
 

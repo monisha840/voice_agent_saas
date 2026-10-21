@@ -350,6 +350,11 @@ export const users = pgTable(
     isActive: boolean("is_active").notNull().default(true),
     /** When the password was last set; sessions older than this can never be resumed. */
     passwordChangedAt: timestamp("password_changed_at", { withTimezone: true }),
+    /**
+     * When the user proved control of `email` (migration 0026). Null = unverified. Set by the email-verification
+     * flow and also by a completed password reset, which proves inbox control by construction.
+     */
+    emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
     /** TOTP secret, AES-256-GCM encrypted (auth/secret-box.ts). Null = MFA not enrolled. Never returned by any API. */
     mfaSecretEnc: text("mfa_secret_enc"),
     /** Set once the user proved possession of the authenticator (enrollment confirmed). */
@@ -781,6 +786,49 @@ export const agentPhoneNumbers = pgTable(
 // Authentication security (MFA recovery, security audit trail, shared login throttling)
 // ---------------------------------------------------------------------------
 
+/** What an account token lets its holder do. One row can never serve both purposes. */
+export const accountTokenPurposeEnum = pgEnum("account_token_purpose", ["password_reset", "email_verification"]);
+
+/**
+ * Single-use, time-boxed account tokens for the two flows a locked-out or unverified user needs: "forgot password"
+ * and e-mail verification (migration 0026).
+ *
+ * Identity data, exactly like sessions / mfa_recovery_codes: addressed by token hash or user id, never by
+ * organization, so it carries NO organization_id and no RLS policy (a reset is looked up with no session and no
+ * tenant context - any policy comparing against app_current_org() would make the row invisible and the flow dead).
+ * The security property is carried by the credential, not by a row policy: only sha256(token) is stored (the token
+ * itself is e-mailed once and never persisted), `used_at` makes a token single-use so it cannot be replayed, and
+ * `expires_at` bounds its life. Reading the whole table yields nothing replayable.
+ *
+ * `email` is the address the token was issued FOR. It is compared with the account's current address on use, so a
+ * token minted before an address change can never confirm the new one.
+ */
+export const accountTokens = pgTable(
+  "account_tokens",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    purpose: accountTokenPurposeEnum("purpose").notNull(),
+    /** The address this token was issued for (lower-cased), bound at issue time. */
+    email: varchar("email", { length: 320 }).notNull(),
+    /** SHA-256 of the token; the token is shown once (in the e-mail) and never stored. */
+    tokenHash: varchar("token_hash", { length: 64 }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    /** Set the moment the token is spent (or superseded). A non-null value can never be used again. */
+    usedAt: timestamp("used_at", { withTimezone: true }),
+    /** Where the request came from, for the security trail. Never an e-mail body or a token. */
+    requestedIp: varchar("requested_ip", { length: 64 }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    tokenHashUnique: uniqueIndex("account_tokens_token_hash_unique").on(t.tokenHash),
+    userPurposeIdx: index("account_tokens_user_purpose_idx").on(t.userId, t.purpose),
+    expiresIdx: index("account_tokens_expires_idx").on(t.expiresAt),
+  }),
+);
+
 /** Single-use MFA recovery codes. Only a SHA-256 of each code is stored. */
 export const mfaRecoveryCodes = pgTable(
   "mfa_recovery_codes",
@@ -940,7 +988,8 @@ export const plans = pgTable("plans", {
   billingInterval: varchar("billing_interval", { length: 10 }).notNull().default("month"),
   includedMinutes: integer("included_minutes").notNull().default(0),
   trialDays: integer("trial_days"),
-  /** maxConcurrentCalls, maxAgents, maxTeamMembers, retentionDays, analytics, apiAccess, webhooks (validated in code). */
+  /** maxConcurrentCalls, maxAgents, maxTeamMembers (validated in code). retentionDays, analytics,
+   * apiAccess and webhooks were dropped by migration 0025 (D3) — advertised but never enforced. */
   entitlements: jsonb("entitlements").notNull().default({}),
   isPublic: boolean("is_public").notNull().default(true),
   isActive: boolean("is_active").notNull().default(true),

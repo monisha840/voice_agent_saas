@@ -37,6 +37,13 @@ const PUBLIC_PATHS = [
   /^\/metrics$/, // bearer METRICS_TOKEN + private host only (runtime/metrics.routes.ts)
   /^\/api\/telephony\/exotel\//, // webhook-secret protected instead
   /^\/api\/auth\/(login|demo-login|config|accept-invite)$/,
+  // Account recovery: a locked-out customer has no session by definition. Each is protected by its own credential
+  // or by a uniform answer, plus a fail-closed rate limit (modules/auth/account-recovery.ts).
+  //   forgot-password               no credential; answers identically for every address
+  //   reset-password                the reset token is the credential
+  //   email-verification/confirm    the verification token is the credential
+  // Requesting a verification mail is NOT here: it is authenticated and reads the address from the session.
+  /^\/api\/auth\/(forgot-password|reset-password|email-verification\/confirm)$/,
 ];
 
 /**

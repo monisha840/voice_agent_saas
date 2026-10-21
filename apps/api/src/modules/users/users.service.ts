@@ -8,10 +8,12 @@ import { hashPassword, verifyPassword } from "../../auth/password.js";
 import { canGrantRole, canManageMemberWithRole } from "../../auth/permissions.js";
 import { invitationsRepository } from "../../db/repositories/invitations.repository.js";
 import { membershipsRepository } from "../../db/repositories/memberships.repository.js";
+import { organizationsRepository } from "../../db/repositories/organizations.repository.js";
 import { usersRepository } from "../../db/repositories/users.repository.js";
 import { ConflictError, ForbiddenError, NotFoundError, UnauthorizedError, ValidationError } from "../../shared/errors.js";
 import { auditService } from "../audit/audit.service.js";
 import { tenantScoped } from "../../auth/tenant-scoped.js";
+import { inviteUrl, sendInviteEmail } from "./invite-email.js";
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -46,43 +48,124 @@ async function assertNotLastOwner(ctx: RequestContext, current: OrgRole) {
   }
 }
 
+/** The organization and inviter names the invitation email mentions. Neither is required for it to send. */
+async function inviterAndOrgNames(ctx: RequestContext) {
+  const inviterId = actorUserId(ctx);
+  const [org, inviter] = await Promise.all([
+    organizationsRepository.findById({ id: ctx.organizationId }),
+    inviterId ? usersRepository.findById({ id: inviterId }) : Promise.resolve(null),
+  ]);
+  return { organizationName: org?.name ?? "your organization", invitedByName: inviter?.name ?? null };
+}
+
+/**
+ * Issues a fresh invitation for an email and mails it. Shared by invite and resend so both follow the same
+ * seat-cap-safe order: revoke whatever is pending for that address FIRST (which releases the seat the invitations
+ * trigger counts), then insert, then send.
+ *
+ * The send happens after the row is committed and cannot undo it: `sendInviteEmail` never throws, and its outcome is
+ * returned so the caller can audit a sent invite differently from an unsent one.
+ */
+async function issueInvitation(ctx: RequestContext, params: { email: string; role: OrgRole }) {
+  await invitationsRepository.revokePendingForEmail({ organizationId: ctx.organizationId, email: params.email });
+  const token = randomBytes(32).toString("base64url");
+  const invitation = await invitationsRepository.create({
+    organizationId: ctx.organizationId,
+    email: params.email,
+    role: params.role,
+    tokenHash: hashInviteToken(token),
+    invitedByUserId: actorUserId(ctx),
+    expiresAt: new Date(Date.now() + INVITE_TTL_MS),
+  });
+  const { organizationName, invitedByName } = await inviterAndOrgNames(ctx);
+  const delivery = await sendInviteEmail({
+    invitationId: invitation.id,
+    email: invitation.email,
+    role: invitation.role,
+    expiresAt: invitation.expiresAt,
+    organizationName,
+    invitedByName,
+    token,
+  });
+  return { invitation, token, delivery };
+}
+
+/**
+ * What the API returns for an issued invitation.
+ *
+ * The link is included ONLY when no email provider is configured (EMAIL_PROVIDER=mock), because then nothing was
+ * actually delivered and hand-delivery is the only way through. With a real provider the token leaves the server
+ * exclusively inside the email body: never in a response, a log, an audit row or a metric. When a real send FAILS the
+ * link is still withheld - the recovery path is POST /api/users/invitations/:id/resend, not a credential in a JSON
+ * body that ends up in a reverse-proxy access log or a browser's network tab.
+ */
+function issuedInvitationResult(issued: Awaited<ReturnType<typeof issueInvitation>>) {
+  const { invitation, delivery } = issued;
+  return {
+    invitation: { id: invitation.id, email: invitation.email, role: invitation.role, expiresAt: invitation.expiresAt },
+    delivery,
+    ...(delivery === "not-configured" ? { inviteUrl: inviteUrl(issued.token) } : {}),
+  };
+}
+
+/** Re-checks, for an invitation issued earlier, that the address has not become a member in the meantime. */
+async function assertNotAlreadyMember(ctx: RequestContext, email: string) {
+  const existing = await usersRepository.findByEmail({ email });
+  if (existing && (await membershipsRepository.findByUserAndOrg({ userId: existing.id, organizationId: ctx.organizationId }))) {
+    throw new ConflictError("This person is already a member of the organization");
+  }
+}
+
 const usersServiceImpl = {
   async listTeam(ctx: RequestContext) {
     assertCan(ctx, "users:read");
     return membershipsRepository.listForOrg({ organizationId: ctx.organizationId });
   },
 
+  /** Creates the invitation and emails the link to the invitee. See issuedInvitationResult for what comes back. */
   async invite(ctx: RequestContext, input: { email: string; role: OrgRole }) {
     assertCan(ctx, "users:invite");
     if (!canGrantRole(actorRole(ctx), input.role)) {
       throw new ForbiddenError("Your role cannot invite someone with this role");
     }
     const email = input.email.trim().toLowerCase();
-    const existing = await usersRepository.findByEmail({ email });
-    if (existing && (await membershipsRepository.findByUserAndOrg({ userId: existing.id, organizationId: ctx.organizationId }))) {
-      throw new ConflictError("This person is already a member of the organization");
-    }
-    await invitationsRepository.revokePendingForEmail({ organizationId: ctx.organizationId, email });
-    const token = randomBytes(32).toString("base64url");
-    const invitation = await invitationsRepository.create({
-      organizationId: ctx.organizationId,
-      email,
-      role: input.role,
-      tokenHash: hashInviteToken(token),
-      invitedByUserId: actorUserId(ctx),
-      expiresAt: new Date(Date.now() + INVITE_TTL_MS),
-    });
+    await assertNotAlreadyMember(ctx, email);
+    const issued = await issueInvitation(ctx, { email, role: input.role });
     await auditService.record(ctx, {
       action: "user.invited",
       entityType: "invitation",
-      entityId: invitation.id,
-      metadata: { email, role: input.role },
+      entityId: issued.invitation.id,
+      // `delivery` is what lets an operator tell a sent invite from an unsent one. The token is never in here.
+      metadata: { email, role: input.role, delivery: issued.delivery },
     });
-    return {
-      invitation: { id: invitation.id, email: invitation.email, role: invitation.role, expiresAt: invitation.expiresAt },
-      inviteToken: token,
-      acceptPath: `/accept-invite?token=${token}`,
-    };
+    return issuedInvitationResult(issued);
+  },
+
+  /**
+   * Resends an invitation. The stored token is a one-way hash, so the old link cannot be re-mailed even in
+   * principle - and should not be: a FRESH token is issued and the previous row is revoked in the same step
+   * (revokePendingForEmail), which keeps the seat-cap triggers balanced and kills a link that may have leaked on its
+   * way to a bounced mailbox. An expired invitation is resendable (that is the main recovery case); an accepted or
+   * explicitly revoked one is not, and answers 404 like any other unknown invitation.
+   */
+  async resendInvitation(ctx: RequestContext, params: { invitationId: string }) {
+    assertCan(ctx, "users:invite");
+    const previous = await invitationsRepository.findById({ organizationId: ctx.organizationId, id: params.invitationId });
+    // Expired is resendable; accepted or revoked is not, and is indistinguishable from an id that does not exist.
+    if (!previous || previous.acceptedAt || previous.revokedAt) throw new NotFoundError("Invitation not found");
+    // Re-checked rather than trusted: the role on the row was grantable when it was created, not necessarily now.
+    if (!canGrantRole(actorRole(ctx), previous.role)) {
+      throw new ForbiddenError("Your role cannot invite someone with this role");
+    }
+    await assertNotAlreadyMember(ctx, previous.email);
+    const issued = await issueInvitation(ctx, { email: previous.email, role: previous.role });
+    await auditService.record(ctx, {
+      action: "user.invitation_resent",
+      entityType: "invitation",
+      entityId: issued.invitation.id,
+      metadata: { email: previous.email, role: previous.role, delivery: issued.delivery, replaces: previous.id },
+    });
+    return issuedInvitationResult(issued);
   },
 
   async listInvitations(ctx: RequestContext) {

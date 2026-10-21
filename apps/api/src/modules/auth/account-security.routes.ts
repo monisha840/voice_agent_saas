@@ -19,6 +19,7 @@ import { parseInput } from "../../shared/validation.js";
 import { requireContext } from "../../auth/auth.plugin.js";
 import { assertCan } from "../../auth/access.js";
 import { routeRateLimit } from "../../security/rate-limits.js";
+import { accountRecovery } from "./account-recovery.js";
 
 const passwordBody = z.object({ password: z.string().min(1).max(MAX_PASSWORD_LENGTH + 128) });
 const changePasswordBody = z.object({
@@ -155,6 +156,42 @@ export async function accountSecurityRoutes(app: FastifyInstance) {
     });
     return reply.send({ data: { ok: true, otherSessionsRevoked: Math.max(0, revoked - 1) } });
   });
+
+  // ---- e-mail verification ------------------------------------------------------------------------------------
+  /**
+   * The caller's own address and whether it is confirmed. Mirrors GET /api/auth/mfa.
+   */
+  app.get("/api/auth/email-verification", async (req, reply) => {
+    const status = await accountRecovery.verificationStatus({ userId: req.auth!.userId });
+    if (!status) throw new UnauthorizedError();
+    return reply.send({
+      data: { email: status.email, verified: status.verified, verifiedAt: status.verifiedAt?.toISOString() ?? null },
+    });
+  });
+
+  /**
+   * Sends a confirmation link to the caller's OWN address.
+   *
+   * AUTHENTICATED on purpose, unlike the other three recovery endpoints. It takes no address in the body - the
+   * address is read from the verified session - so it cannot be used to probe which addresses exist, and it cannot
+   * be aimed at a third party's mailbox. That removes an enumeration and mail-bombing surface rather than adding
+   * one, which is why it does not need the elaborate uniform-answer treatment /forgot-password has. When
+   * self-serve signup arrives it will call accountRecovery.requestEmailVerification inline at signup, for the
+   * account it has just created, so no public "mail address X" endpoint is ever needed.
+   *
+   * Tighter budget than `sensitive()`: this one actually sends mail, so 5 per 15 minutes per account.
+   */
+  app.post(
+    "/api/auth/email-verification/send",
+    { preHandler: routeRateLimit({ name: "email-verification-send", max: 5, windowMs: 15 * 60_000, key: (req) => `acct:${req.auth?.userId ?? req.ip}` }) },
+    async (req, reply) => {
+      const result = await accountRecovery.requestEmailVerification(
+        { userId: req.auth!.userId },
+        { ip: req.ip, userAgent: req.headers["user-agent"] },
+      );
+      return reply.send({ data: { ok: true, ...result } });
+    },
+  );
 
   // ---- MFA ----------------------------------------------------------------------------------------------------
   app.get("/api/auth/mfa", async (req, reply) => {
