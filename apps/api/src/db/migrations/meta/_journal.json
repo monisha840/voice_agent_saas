@@ -8,6 +8,181 @@
       "when": 1791116333578,
       "tag": "0000_brown_sasquatch",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1791201198437,
+      "tag": "0001_solid_leader",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791202017057,
+      "tag": "0002_flimsy_energizer",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1791202074560,
+      "tag": "0003_brave_ogun",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1791202753548,
+      "tag": "0004_narrow_wendell_vaughn",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1791202995393,
+      "tag": "0005_hesitant_juggernaut",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791207170297,
+      "tag": "0006_yummy_revanche",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1791210462064,
+      "tag": "0007_harsh_metal_master",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1791264086079,
+      "tag": "0008_clear_warbound",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1791265211568,
+      "tag": "0009_next_eddie_brock",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1791892520196,
+      "tag": "0010_regular_sleepwalker",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1791900758199,
+      "tag": "0011_fluffy_owl",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1791968272247,
+      "tag": "0012_row_level_security",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1791971730960,
+      "tag": "0013_auth_security",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1791978133601,
+      "tag": "0014_stream_tokens",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1791978528052,
+      "tag": "0015_security_event_retention",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1791981395942,
+      "tag": "0017_stream_claims",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1791981454540,
+      "tag": "0018_rate_limit_buckets",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1791981624983,
+      "tag": "0019_billing_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1791984880537,
+      "tag": "0020_entitlement_seat_caps",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1791984931706,
+      "tag": "0021_stream_grants",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1791987201799,
+      "tag": "0022_billing_grants_hardening",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1792046490039,
+      "tag": "0023_knowledge_base",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1792055434901,
+      "tag": "0024_number_management",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1792564599222,
+      "tag": "0025_drop_unenforced_entitlements",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1792566522156,
+      "tag": "0026_account_recovery",
+      "breakpoints": true
     }
   ]
 }

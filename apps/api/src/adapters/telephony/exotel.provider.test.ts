@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { ExotelProvider } from "./exotel.provider.js";
 import { ProviderConfigError } from "../../shared/errors.js";
 
@@ -30,5 +30,143 @@ describe("ExotelProvider (no real credentials configured in this environment)", 
   it("parseStatusCallback throws on a payload missing CallSid", () => {
     const provider = new ExotelProvider();
     expect(() => provider.parseStatusCallback({ Status: "completed" })).toThrow();
+  });
+});
+
+describe("ExotelProvider status mapping for unanswered calls", () => {
+  it.each([
+    ["busy", "busy"],
+    ["no-answer", "no_answer"],
+    ["failed", "failed"],
+  ])("maps Exotel %s to %s (not blindly failed)", (exotelStatus, expected) => {
+    const parsed = new ExotelProvider().parseStatusCallback({ CallSid: "CA1", Status: exotelStatus });
+    expect(parsed.status).toBe(expected);
+  });
+});
+
+describe("ExotelProvider Connect Voice AI request", () => {
+  const ENV = {
+    EXOTEL_API_KEY: "test-key",
+    EXOTEL_API_TOKEN: "test-token",
+    EXOTEL_ACCOUNT_SID: "acme1",
+    EXOTEL_SUBDOMAIN: "api.exotel.com",
+    EXOTEL_FROM_NUMBER: "0XXXXXXXXXX",
+    EXOTEL_WEBHOOK_BASE_URL: "https://abc.ngrok-free.dev/",
+    EXOTEL_AGENTSTREAM_WEBHOOK_SECRET: "s3cret",
+  };
+  const saved: Record<string, string | undefined> = {};
+  beforeEach(() => {
+    for (const [k, v] of Object.entries(ENV)) {
+      saved[k] = process.env[k];
+      process.env[k] = v;
+    }
+    saved.EXOTEL_CALL_TYPE = process.env.EXOTEL_CALL_TYPE;
+    delete process.env.EXOTEL_CALL_TYPE;
+  });
+  afterEach(() => {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    vi.restoreAllMocks();
+  });
+
+  it("puts the customer in From and the ExoPhone in CallerId, with a bidirectional wss StreamUrl", () => {
+    const body = new ExotelProvider().buildConnectRequest({ toNumber: "+919000000001", internalCallId: "call-1" }, "signed.stream.token");
+    expect(body.get("From")).toBe("+919000000001");
+    expect(body.get("CallerId")).toBe("0XXXXXXXXXX");
+    expect(body.get("To")).toBeNull();
+    expect(body.get("StreamType")).toBe("bidirectional");
+    expect(body.get("CallType")).toBeNull(); // omitted until Exotel confirms the right value
+    const stream = new URL(body.get("StreamUrl")!);
+    expect(stream.protocol).toBe("wss:");
+    expect(stream.host).toBe("abc.ngrok-free.dev");
+    expect(stream.pathname).toBe("/api/telephony/exotel/media-stream");
+    // The media stream carries the per-call signed token, not a caller-chosen call id.
+    expect(stream.searchParams.get("st")).toBe("signed.stream.token");
+    expect(stream.searchParams.get("internalCallId")).toBeNull();
+    // The shared secret is repeated only as a compatibility fallback (STREAM_ALLOW_STATIC_SECRET, default on) ...
+    expect(stream.searchParams.get("token")).toBe("s3cret");
+    // ... and the status callback (webhook authentication) keeps it.
+    const cb = new URL(body.get("StatusCallback")!);
+    expect(cb.searchParams.get("token")).toBe("s3cret");
+    expect(cb.searchParams.get("internalCallId")).toBe("call-1");
+    expect(cb.searchParams.get("st")).toBeNull();
+  });
+
+  it("with STREAM_ALLOW_STATIC_SECRET=false the stream URL carries ONLY the per-call token", () => {
+    process.env.STREAM_ALLOW_STATIC_SECRET = "false";
+    try {
+      const body = new ExotelProvider().buildConnectRequest({ toNumber: "+919000000001", internalCallId: "call-1" }, "signed.stream.token");
+      const stream = new URL(body.get("StreamUrl")!);
+      expect([...stream.searchParams.keys()]).toEqual(["st"]);
+      expect(body.get("StreamUrl")).not.toContain("s3cret");
+    } finally {
+      delete process.env.STREAM_ALLOW_STATIC_SECRET;
+    }
+  });
+
+  it("refuses to build a StreamUrl without a stream token", () => {
+    expect(() => new ExotelProvider().buildConnectRequest({ toNumber: "+919000000001", internalCallId: "call-1" })).toThrow(/stream token/i);
+  });
+
+  it("requests answered + terminal JSON status callbacks on an https URL", () => {
+    const body = new ExotelProvider().buildConnectRequest({ toNumber: "+919000000001", internalCallId: "call-1" }, "t");
+    const cb = new URL(body.get("StatusCallback")!);
+    expect(cb.protocol).toBe("https:");
+    expect(cb.pathname).toBe("/api/telephony/exotel/status-callback");
+    expect(body.get("StatusCallbackEvents[0]")).toBe("terminal");
+    expect(body.get("StatusCallbackEvents[1]")).toBe("answered");
+    expect(body.get("StatusCallbackContentType")).toBe("application/json");
+  });
+
+  it("includes CallType only when EXOTEL_CALL_TYPE is set", () => {
+    process.env.EXOTEL_CALL_TYPE = "trans";
+    const body = new ExotelProvider().buildConnectRequest({ toNumber: "+919000000001", internalCallId: "c" }, "t");
+    expect(body.get("CallType")).toBe("trans");
+  });
+
+  it("POSTs to the configured region host with Basic auth and returns the Call Sid", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ Call: { Sid: "CA999" } }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await new ExotelProvider().initiateCall({
+      toNumber: "+919000000001",
+      internalCallId: "00000000-0000-4000-8000-000000000001",
+      organizationId: "00000000-0000-4000-8000-0000000000aa",
+    });
+    expect(result.providerCallId).toBe("CA999");
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://api.exotel.com/v1/Accounts/acme1/Calls/connect.json");
+    expect(init.headers.Authorization).toBe(`Basic ${Buffer.from("test-key:test-token").toString("base64")}`);
+    vi.unstubAllGlobals();
+  });
+
+  it("refuses a non-https webhook base and a missing webhook secret", () => {
+    process.env.EXOTEL_WEBHOOK_BASE_URL = "http://abc.ngrok-free.dev";
+    expect(() => new ExotelProvider().buildConnectRequest({ toNumber: "+91", internalCallId: "c" }, "t")).toThrow(
+      ProviderConfigError,
+    );
+    process.env.EXOTEL_WEBHOOK_BASE_URL = "https://abc.ngrok-free.dev";
+    process.env.EXOTEL_AGENTSTREAM_WEBHOOK_SECRET = "";
+    expect(() => new ExotelProvider().buildConnectRequest({ toNumber: "+91", internalCallId: "c" }, "t")).toThrow(
+      /EXOTEL_AGENTSTREAM_WEBHOOK_SECRET/,
+    );
+  });
+});
+
+describe("ExotelProvider status callback events", () => {
+  it("maps answered/ringing EventType regardless of Status, and terminal events by Status", () => {
+    const p = new ExotelProvider();
+    expect(p.parseStatusCallback({ CallSid: "CA1", EventType: "answered", Status: "in-progress" }).status).toBe("in_progress");
+    expect(p.parseStatusCallback({ CallSid: "CA1", EventType: "ringing" }).status).toBe("ringing");
+    const terminal = p.parseStatusCallback({ CallSid: "CA1", EventType: "terminal", Status: "completed", ConversationDuration: "42" });
+    expect(terminal.status).toBe("completed");
+    expect(terminal.durationSeconds).toBe(42);
+  });
+
+  it("rejects an unrecognized status instead of failing a live call", () => {
+    expect(() => new ExotelProvider().parseStatusCallback({ CallSid: "CA1", Status: "mystery" })).toThrow(/Unrecognized/);
   });
 });

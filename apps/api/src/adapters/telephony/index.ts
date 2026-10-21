@@ -19,3 +19,8 @@ export function getTelephonyProvider(): ITelephonyProvider {
   cached = telephonyProvider === "exotel" ? new ExotelProvider() : new MockTelephonyProvider();
   return cached;
 }
+
+/** Test seam: install (or clear with null) the provider instance used by routes. */
+export function setTelephonyProvider(provider: ITelephonyProvider | null): void {
+  cached = provider;
+}

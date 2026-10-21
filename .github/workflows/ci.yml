@@ -1,0 +1,120 @@
+name: CI
+
+# WHEN THIS RUNS (read this before wondering why nothing happened):
+#   * push to `master` or `main` only. The default branch of this repository is `master`.
+#     A push to any other branch (e.g. `fix/...`) starts NOTHING.
+#   * any pull request targeting any branch.
+#   * manual run from the Actions tab (`workflow_dispatch`) - but GitHub only lists a workflow for manual
+#     runs once this file exists on the DEFAULT branch, so the very first run must come from a pull
+#     request or from a push/merge to `master`.
+# `docs/release/ci-coverage.md` has the step-by-step first-run procedure.
+#
+# This workflow is the fast gate (typecheck/lint/test/build + docker images). `security.yml` runs a superset of
+# the api/web checks plus migrations, drift, audit and Playwright; make "Security" the required status check.
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "22"
+  # Must equal the pnpm that wrote pnpm-lock.yaml (lockfileVersion 9.0). Verified published version; also the
+  # default ARG in infra/docker/*.Dockerfile.
+  PNPM_VERSION: "12.6.0"
+
+jobs:
+  api:
+    name: API (typecheck, lint, test, build)
+    runs-on: ubuntu-latest
+    # The vitest suite is serial by design (fileParallelism: false, ~1900 tests) and a 2-core runner is slower
+    # than a dev machine. Generous on purpose for the first runs; tighten once real durations are known.
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: voice_agent_mvp
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # The test run creates, migrates and seeds its own `voice_agent_test` database on this server (never the main one).
+      # 127.0.0.1, not "localhost": Node may resolve "localhost" to ::1, which the mapped service port does not answer.
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/voice_agent_mvp
+      AI_PROVIDER: mock
+      TELEPHONY_PROVIDER: mock
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @voice-agent/api typecheck
+      - run: pnpm --filter @voice-agent/api lint
+      # Not just `vitest run`: vitest exits 0 even when a forked worker dies mid-file and silently drops its
+      # tests (seen locally 2026-10-21: "156 passed | 4 skipped (161)" with 37 tests unaccounted for). The guard
+      # reconciles vitest's own JSON report and fails the job when files or tests are missing, so a required check
+      # can never be green on a partial run. It also fails on genuine test failures, so nothing is masked.
+      - name: Full API suite + run-completeness guard
+        run: |
+          status=0
+          pnpm --filter @voice-agent/api exec vitest run --reporter=default --reporter=json --outputFile.json=test-report.json || status=$?
+          node apps/api/scripts/verify-test-run.mjs apps/api/test-report.json --min-files=150 --package-dir=apps/api
+          exit $status
+      - run: pnpm --filter @voice-agent/api build
+
+  web:
+    name: Web (typecheck, lint, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @voice-agent/web typecheck
+      - run: pnpm --filter @voice-agent/web lint
+      - run: pnpm --filter @voice-agent/web build
+
+  docker:
+    name: Docker images build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [api, web]
+    steps:
+      - uses: actions/checkout@v4
+      # Node/pnpm are passed in so the pin lives only in this file's `env` block; the Dockerfiles default to the
+      # same values when built by hand.
+      - run: >-
+          docker build -f infra/docker/api.Dockerfile
+          --build-arg NODE_VERSION=${{ env.NODE_VERSION }}
+          --build-arg PNPM_VERSION=${{ env.PNPM_VERSION }}
+          -t voice-agent-api:ci .
+      - run: >-
+          docker build -f infra/docker/web.Dockerfile
+          --build-arg NODE_VERSION=${{ env.NODE_VERSION }}
+          --build-arg PNPM_VERSION=${{ env.PNPM_VERSION }}
+          -t voice-agent-web:ci .

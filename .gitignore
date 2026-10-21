@@ -15,3 +15,25 @@ coverage/
 
 # Postgres local data (must never be committed - reproducibility rule)
 infra/docker/pgdata/
+
+# STT benchmark audio fixtures (may contain real voices / PII; never commit)
+apps/api/bench-audio/
+
+# Playwright browser e2e output (run artefacts, screenshots on failure)
+test-results/
+playwright-report/
+blob-report/
+
+# Database dumps / backups and their checksums (may contain tenant data; never commit)
+db-backups/
+*.dump
+*.dump.sha256
+
+# Throwaway operator/diagnostic scripts (apps/api/src/scripts/_tmp-*.ts). Kept out of the repo because they embed
+# environment-specific values: _tmp-applet-urls.ts writes the stream secret to a file and _tmp-live-path.ts hard-codes
+# a live ExoPhone. _tmp-live-path.ts is worth promoting to a real script (drop the _tmp- prefix, take the number as an
+# argument) when the provider accounts are paid and voice validation starts.
+apps/api/src/scripts/_tmp-*.ts
+
+# Vitest JSON run report (CI completeness guard input; regenerated each run)
+apps/api/test-report.json

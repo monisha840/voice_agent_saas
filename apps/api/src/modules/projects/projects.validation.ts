@@ -1,0 +1,32 @@
+import { z } from "zod";
+
+export const projectIdParam = z.object({ id: z.string().uuid("must be a valid id") });
+export const projectCategoryParams = z.object({ id: z.string().uuid("must be a valid id"), category: z.string().min(1).max(50) });
+
+export const createProjectBody = z.object({
+  name: z.string().trim().min(2).max(255),
+  location: z.string().trim().min(1).max(255),
+  description: z.string().trim().max(5000).optional(),
+});
+
+export const updateProjectBody = z
+  .object({
+    name: z.string().trim().min(2).max(255).optional(),
+    location: z.string().trim().min(1).max(255).optional(),
+    description: z.string().trim().max(5000).nullable().optional(),
+  })
+  .refine((b) => Object.keys(b).length > 0, { message: "at least one field is required" });
+
+export const knowledgeBody = z.object({ content: z.record(z.string(), z.unknown()) });
+
+/** A client's spreadsheet exported as CSV: `units` (apartment types or plots) or `faq` (question, answer). */
+export const importBody = z
+  .object({ kind: z.enum(["units", "faq"]), csv: z.string().min(1).max(500_000), dryRun: z.boolean().optional() })
+  .strict();
+
+/** Brochure / price sheet / FAQ text to turn into a draft of the project's knowledge. */
+export const draftBody = z.object({ text: z.string().trim().min(20).max(20_000) }).strict();
+
+export const membersBody = z.object({ userIds: z.array(z.string().uuid()).max(500) });
+
+export const listQuery = z.object({ includeArchived: z.enum(["true", "false"]).optional() });

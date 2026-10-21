@@ -1,0 +1,256 @@
+name: Security
+
+# Pull-request gate for the security-relevant checks: restricted-role test suite, drift, dependency audit, browser e2e.
+# No secrets are used. Every database is a throwaway service container; nothing touches a real environment.
+#
+# WHEN THIS RUNS (read this before wondering why nothing happened):
+#   * push to `master` or `main` only. The default branch of this repository is `master`.
+#     A push to any other branch (e.g. `fix/...`) starts NOTHING.
+#   * any pull request targeting any branch - this is how a feature branch gets checked.
+#   * manual run from the Actions tab (`workflow_dispatch`), which GitHub only offers once this file exists on
+#     the DEFAULT branch. For the very first run, open a pull request.
+# `docs/release/ci-coverage.md` has the step-by-step first-run procedure.
+on:
+  pull_request:
+  push:
+    branches: [master, main]
+  # Manual run from the Actions tab; only available once this file is on the default branch.
+  workflow_dispatch:
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "22"
+  # Must equal the pnpm that wrote pnpm-lock.yaml (lockfileVersion 9.0). Verified published version; also the
+  # default ARG in infra/docker/*.Dockerfile.
+  PNPM_VERSION: "12.6.0"
+
+jobs:
+  api:
+    name: API (typecheck, lint, tests as restricted role, migration drift, build)
+    runs-on: ubuntu-latest
+    # The vitest suite is serial by design (fileParallelism: false, ~1900 tests) and this job runs it once in full
+    # plus the named subsets, twice-applied migrations, drift probe and a production build. A 2-core runner is
+    # several times slower than a dev machine, so this ceiling is deliberately generous for the first runs;
+    # tighten it once a real run has shown the duration.
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: voice_agent_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Owner URL: the vitest global setup creates its own `voice_agent_test` database on this server, migrates it and
+      # creates the restricted `voice_app` role; the tests then run as that role (RLS enforced).
+      # 127.0.0.1, not "localhost": Node may resolve "localhost" to ::1, which the mapped service port does not answer.
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/voice_agent_ci
+      AI_PROVIDER: mock
+      TELEPHONY_PROVIDER: mock
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Throwaway secrets (generated per run, masked, never real credentials)
+        run: |
+          for v in METRICS_TOKEN; do
+            val="$(openssl rand -hex 24)"
+            echo "::add-mask::$val"
+            echo "$v=$val" >> "$GITHUB_ENV"
+          done
+      - run: pnpm --filter @voice-agent/api typecheck
+      - run: pnpm --filter @voice-agent/api lint
+      - name: Migrations apply to an empty database, twice (idempotent), with the target guard satisfied
+        env:
+          DATABASE_MIGRATION_URL: postgresql://postgres:postgres@127.0.0.1:5432/voice_agent_ci
+        run: |
+          pnpm --filter @voice-agent/api db:migrate
+          pnpm --filter @voice-agent/api db:migrate
+          # The expected number is read from the journal, never hard-coded, so adding a migration cannot make this
+          # step stale. The log line below is the number to quote when recording the run.
+          expected=$(node -e 'console.log(JSON.parse(require("fs").readFileSync("apps/api/src/db/migrations/meta/_journal.json","utf8")).entries.length)')
+          applied=$(docker run --rm --network host -e PGPASSWORD=postgres postgres:16-alpine psql -h 127.0.0.1 -U postgres -d voice_agent_ci -tAc "select count(*) from drizzle.__drizzle_migrations")
+          echo "journal entries=$expected applied=$applied"
+          test "$expected" = "$applied"
+      - name: RLS, guardrails and migration safety suites (also part of the full run below; named so a failure is obvious)
+        run: >-
+          pnpm --filter @voice-agent/api exec vitest run
+          src/db/rls.test.ts src/security/guardrails.test.ts src/db/migration-upgrade.test.ts src/db/migrate-guard.test.ts
+      - name: Billing suites (ledger, quotas, seat caps, billing migration upgrade paths; also part of the full run below)
+        run: >-
+          pnpm --filter @voice-agent/api exec vitest run src/modules/billing
+      # Not just `vitest run`: vitest exits 0 even when a forked worker dies mid-file and silently drops its
+      # tests (seen locally 2026-10-21: "156 passed | 4 skipped (161)" with 37 tests unaccounted for). The guard
+      # reconciles vitest's own JSON report and fails the job when files or tests are missing, so a required check
+      # can never be green on a partial run. It also fails on genuine test failures, so nothing is masked.
+      - name: Full API suite + run-completeness guard
+        run: |
+          status=0
+          pnpm --filter @voice-agent/api exec vitest run --reporter=default --reporter=json --outputFile.json=test-report.json || status=$?
+          node apps/api/scripts/verify-test-run.mjs apps/api/test-report.json --min-files=150 --package-dir=apps/api
+          exit $status
+      # Requires every generated migration artefact to be committed: the .sql file, meta/<n>_snapshot.json and
+      # meta/_journal.json. A migration left untracked shows up here as drift.
+      - name: Migration drift check (schema.ts must match the committed migrations)
+        working-directory: apps/api
+        run: |
+          pnpm exec drizzle-kit check
+          pnpm exec drizzle-kit generate --name ci_drift_probe
+          if [ -n "$(git status --porcelain -- src/db/migrations)" ]; then
+            echo "::error::schema.ts differs from the committed migrations; run 'pnpm db:generate' and commit the result."
+            git status --porcelain -- src/db/migrations
+            exit 1
+          fi
+      # Production compile of the API (tsc -> dist). Last, so the drift probe above sees an untouched tree.
+      - run: pnpm --filter @voice-agent/api build
+
+  web:
+    name: Web (typecheck, lint, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @voice-agent/web typecheck
+      - run: pnpm --filter @voice-agent/web lint
+      - run: pnpm --filter @voice-agent/web build
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Production dependencies (gate)
+        run: pnpm audit --prod
+      - name: All dependencies (report only; known dev-only advisories are in docs/security/dev-dependencies.md)
+        continue-on-error: true
+        run: pnpm audit
+
+  e2e:
+    name: Browser e2e (Playwright, account security, billing, dashboard and knowledge base UI)
+    runs-on: ubuntu-latest
+    # Four suites run serially and three of them do a full `next build` first. Deliberately generous for the
+    # first runs; tighten once a real run has shown the duration.
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # One throwaway server, four suites run SERIALLY in this job, each with its own database, login role and ports:
+      #   e2e/run.mjs          -> voice_agent_ui_test / voice_app_uitest, API :4100, web :3100 (next dev)
+      #   e2e/billing-run.mjs  -> voice_agent_billing_ui_test / voice_app_billuitest, API :4291, web :3291 (next build+start)
+      #   e2e/dashboard-run.mjs -> voice_agent_dashboard_ui_test / voice_app_dashuitest, API :4391, web :3391 (next build+start)
+      #   e2e/knowledge-run.mjs -> voice_agent_kb_ui_test / voice_app_kbuitest, API :4491, web :3491 (next build+start)
+      # Each runner creates its database at start and drops it (and its role) at exit.
+      # 127.0.0.1, not "localhost": Node may resolve "localhost" to ::1, which the mapped service port does not answer.
+      E2E_ADMIN_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - id: pw
+        run: pnpm --filter @voice-agent/web exec playwright install --with-deps chromium
+      - name: Account security e2e (both MFA phases)
+        env:
+          E2E_LOG_DIR: ${{ github.workspace }}/e2e-logs/security
+        run: pnpm --filter @voice-agent/web e2e
+      # Playwright empties apps/web/test-results at the start of every run; keep the security run's screenshots.
+      - name: Keep security e2e failure screenshots
+        if: ${{ !cancelled() }}
+        run: |
+          if [ -d apps/web/test-results ]; then
+            mkdir -p e2e-logs/security
+            mv apps/web/test-results e2e-logs/security/test-results
+          fi
+      # Runs even when the security suite failed, so both results are visible in one run.
+      - name: Billing UI e2e (production web build)
+        if: ${{ !cancelled() && steps.pw.outcome == 'success' }}
+        env:
+          E2E_LOG_DIR: ${{ github.workspace }}/e2e-logs/billing
+        run: pnpm --filter @voice-agent/web e2e:billing
+      - name: Keep billing e2e failure screenshots
+        if: ${{ !cancelled() }}
+        run: |
+          if [ -d apps/web/test-results ]; then
+            mkdir -p e2e-logs/billing
+            mv apps/web/test-results e2e-logs/billing/test-results
+          fi
+      - name: Customer dashboard e2e (production web build)
+        if: ${{ !cancelled() && steps.pw.outcome == 'success' }}
+        env:
+          E2E_LOG_DIR: ${{ github.workspace }}/e2e-logs/dashboard
+        run: pnpm --filter @voice-agent/web e2e:dashboard
+      - name: Keep dashboard e2e failure screenshots
+        if: ${{ !cancelled() }}
+        run: |
+          if [ -d apps/web/test-results ]; then
+            mkdir -p e2e-logs/dashboard
+            mv apps/web/test-results e2e-logs/dashboard/test-results
+          fi
+      - name: Knowledge base and playground e2e (production web build)
+        if: ${{ !cancelled() && steps.pw.outcome == 'success' }}
+        env:
+          E2E_LOG_DIR: ${{ github.workspace }}/e2e-logs/knowledge
+        run: pnpm --filter @voice-agent/web e2e:knowledge
+      - name: Upload server logs and failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-diagnostics
+          path: |
+            e2e-logs
+            apps/web/test-results
+          if-no-files-found: ignore
+          retention-days: 7

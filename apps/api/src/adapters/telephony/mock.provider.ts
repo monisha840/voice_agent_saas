@@ -1,26 +1,85 @@
 /**
  * Mock telephony provider — used for local development and automated
  * tests when TELEPHONY_PROVIDER=mock (the default). It never claims a
- * real call happened; it simulates the provider contract only, so the
- * rest of the system (calls module, dashboard polling, websocket
- * harness) can be exercised without real Exotel credentials.
+ * real call happened. After accepting a call it (optionally) launches
+ * the local call simulator in the background, which acts as Exotel
+ * against this API's real status-callback and media-stream endpoints —
+ * so a "Call Lead" click with mock providers runs the full pipeline and
+ * finalizes the call.
+ *
+ * Set MOCK_TELEPHONY_AUTOPLAY=false to only return a call id (the old
+ * behaviour); MOCK_CALL_SCENARIO=busy|no_answer to simulate unanswered calls.
  */
-
+import { getConfig } from "../../config/env.js";
+import { runSimulatedCall, type LineImpairments, type SimulatedCallOptions, type SimulationReport } from "../../simulator/call-simulator.js";
+import { logger } from "../../shared/logger.js";
 import type {
   ITelephonyProvider,
   InitiateCallParams,
   InitiateCallResult,
   ParsedStatusCallback,
+  ProviderNumberCheck,
+  ProviderSetupStatus,
   TelephonyStatusCallbackPayload,
 } from "./telephony.interface.js";
 
+export interface MockTelephonyOptions {
+  autoplay?: boolean;
+  baseUrl?: string;
+  scenario?: SimulatedCallOptions["scenario"];
+  customerTurns?: readonly string[];
+  duplicateCompletedCallback?: boolean;
+  passInternalCallIdInUrl?: boolean;
+  interruptOpening?: boolean;
+  customerAudio?: readonly Buffer[];
+  impairments?: LineImpairments;
+}
+
 export class MockTelephonyProvider implements ITelephonyProvider {
   readonly name = "mock";
+  /** Background simulations started by this provider (awaitable by tests). */
+  readonly simulations: Promise<SimulationReport | null>[] = [];
+
+  constructor(private readonly options: MockTelephonyOptions = {}) {}
 
   async initiateCall(params: InitiateCallParams): Promise<InitiateCallResult> {
+    const cfg = getConfig().mockTelephony;
+    const autoplay = this.options.autoplay ?? cfg.autoplay;
+    if (autoplay) {
+      const simulation = runSimulatedCall({
+        baseUrl: this.options.baseUrl ?? cfg.baseUrl,
+        internalCallId: params.internalCallId,
+        scenario: this.options.scenario ?? cfg.scenario,
+        customerTurns: this.options.customerTurns,
+        duplicateCompletedCallback: this.options.duplicateCompletedCallback,
+        passInternalCallIdInUrl: this.options.passInternalCallIdInUrl,
+        interruptOpening: this.options.interruptOpening,
+        customerAudio: this.options.customerAudio,
+        impairments: this.options.impairments,
+      }).catch((err: unknown) => {
+        logger.error("mock-telephony: simulated call failed", {
+          internalCallId: params.internalCallId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return null;
+      });
+      this.simulations.push(simulation);
+    }
     return {
       providerCallId: `mock-call-${params.internalCallId}`,
       status: "initiating",
+    };
+  }
+
+  describeSetup(): ProviderSetupStatus {
+    return { provider: this.name, simulated: true, configured: true, missing: [], problems: [], numberCheckSupported: false };
+  }
+
+  /** There is no provider account behind the development provider, so nothing can be confirmed (never "verified"). */
+  async checkNumber(): Promise<ProviderNumberCheck> {
+    return {
+      status: "unsupported",
+      detail: "This environment uses the simulated telephony provider: no real calls arrive, so the number cannot be checked with a provider.",
     };
   }
 
